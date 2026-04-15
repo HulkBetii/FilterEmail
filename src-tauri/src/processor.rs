@@ -11,7 +11,7 @@ use std::{
 use hickory_resolver::{config::{ResolverConfig, ResolverOpts}, Resolver};
 
 const BUFFER_CAPACITY: usize = 1024 * 1024;
-const EMIT_EVERY: u64 = 10_000;
+const EMIT_EVERY: u64 = 500;
 const PUBLIC_DOMAINS: [&str; 19] = [
     "gmail.com",
     "yahoo.com",
@@ -155,6 +155,7 @@ where
     let mut custom: u64 = 0;
     let mut duplicates: u64 = 0;
     let mut mx_dead: u64 = 0;
+    let mut last_emitted_pct: i64 = -1;
 
     let mut seen_emails: HashSet<String> = HashSet::with_capacity(100_000);
     let mut mx_cache: HashMap<String, bool> = HashMap::with_capacity(5_000);
@@ -245,22 +246,29 @@ where
             }
 
             if processed_lines % EMIT_EVERY == 0 {
-                let payload = build_processing_payload(
-                    &output_dir,
-                    processed_lines,
-                    bytes_read,
-                    total_bytes,
-                    invalid,
-                    public,
-                    edu,
-                    targeted,
-                    custom,
-                    duplicates,
-                    mx_dead,
-                    started_at.elapsed().as_millis(),
-                );
-
-                emit_progress_event(payload, "processing-progress").ok();
+                let current_pct = if total_bytes > 0 {
+                    ((bytes_read as f64 / total_bytes as f64) * 100.0) as i64
+                } else {
+                    0
+                };
+                if current_pct != last_emitted_pct {
+                    last_emitted_pct = current_pct;
+                    let payload = build_processing_payload(
+                        &output_dir,
+                        processed_lines,
+                        bytes_read,
+                        total_bytes,
+                        invalid,
+                        public,
+                        edu,
+                        targeted,
+                        custom,
+                        duplicates,
+                        mx_dead,
+                        started_at.elapsed().as_millis(),
+                    );
+                    emit_progress_event(payload, "processing-progress").ok();
+                }
             }
         }
     }
