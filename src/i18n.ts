@@ -16,6 +16,7 @@ type TranslationShape = {
     invalid: string;
     public: string;
     edu: string;
+    targeted: string;
     custom: string;
     progress: string;
     linesProcessed: string;
@@ -28,6 +29,8 @@ type TranslationShape = {
     outputFolder: string;
     noFolder: string;
     selectFolder: string;
+    targetedInputLabel: string;
+    targetedInputPlaceholder: string;
     start: string;
     processing: string;
     openFolder: string;
@@ -48,7 +51,13 @@ type TranslationShape = {
     summaryInvalidRate: string;
     summaryPublicRate: string;
     summaryEduRate: string;
+    summaryTargetedRate: string;
     summaryCustomRate: string;
+    openHistory: string;
+    historyTitle: string;
+    clearHistory: string;
+    emptyHistory: string;
+    close: string;
   };
 };
 
@@ -69,7 +78,9 @@ export const translations = {
       invalid: "Invalid",
       public: "Public Mail",
       edu: "Edu / Gov",
-      custom: "Custom",
+      targeted: "Targeted",
+      mx_dead: "Dead Domains (MX)",
+      custom: "Other",
       progress: "Progress",
       linesProcessed: "Lines Processed",
       elapsed: "Time Elapsed",
@@ -82,16 +93,19 @@ export const translations = {
       outputFolder: "Output folder",
       noFolder: "Choose where result files should be written",
       selectFolder: "Select Folder",
+      targetedInputLabel: "Targeted Domains (Optional)",
+      targetedInputPlaceholder: "e.g. vnpt.vn, fpt.com",
+      mxCheckLabel: "Enable MX DNS Check (Slower but 100% accurate)",
       start: "Start Processing",
-      processing: "Processing...",
-      openFolder: "Open Result Folder",
+      processing: "Filtering...",
+      openFolder: "Open Folder",
       classified: "Classified Records",
       classifiedBody:
         "The Rust backend streams one line at a time with buffered reads and writes, so memory usage stays predictable even on very large files.",
       heroBadge: "Tauri v2 + Rust stream processing",
       heroTitle: "Sort massive email lists without touching your RAM ceiling.",
       heroBody:
-        "Filter `.txt` and `.csv` files line by line into Invalid, Public, Edu/Gov, and Custom buckets with live progress and desktop-native file handling.",
+        "Filter `.txt` and `.csv` files line by line into Invalid, Public, Edu/Gov, Targeted, and Other buckets with live progress and desktop-native file handling.",
       language: "Language",
       english: "English",
       vietnamese: "Tiếng Việt",
@@ -106,7 +120,13 @@ export const translations = {
       summaryInvalidRate: "Invalid Rate",
       summaryPublicRate: "Public Rate",
       summaryEduRate: "Edu / Gov Rate",
-      summaryCustomRate: "Custom Rate",
+      summaryTargetedRate: "Targeted Rate",
+      summaryCustomRate: "Other Rate",
+      openHistory: "History",
+      historyTitle: "Processing History",
+      clearHistory: "Clear History",
+      emptyHistory: "No history records yet.",
+      close: "Close",
     },
   },
   vi: {
@@ -125,7 +145,12 @@ export const translations = {
       invalid: "Không hợp lệ",
       public: "Mail công cộng",
       edu: "Giáo dục / Chính phủ",
-      custom: "Doanh nghiệp",
+      targeted: "Tùy chọn",
+      duplicates: "Bị Trùng",
+      mx_dead: "Tên miền sống ảo (Die)",
+      custom: "Khác",
+      processError: "Lỗi Xử Lý",
+      zeroFound: "Không tìm thấy.",
       progress: "Tiến độ",
       linesProcessed: "Số dòng đã xử lý",
       elapsed: "Thời gian đã trôi qua",
@@ -138,16 +163,19 @@ export const translations = {
       outputFolder: "Thư mục đầu ra",
       noFolder: "Chọn nơi sẽ ghi các tệp kết quả",
       selectFolder: "Chọn Thư Mục",
+      targetedInputLabel: "Đuôi Mail Tùy Chọn",
+      targetedInputPlaceholder: "vd: vnpt.vn, fpt.com",
+      mxCheckLabel: "Bật Quét Sâu DNS (Loại bỏ mail chết, chạy chậm hơn)",
       start: "Bắt Đầu Xử Lý",
-      processing: "Đang Xử Lý...",
-      openFolder: "Mở Thư Mục Kết Quả",
+      processing: "Đang lọc...",
+      openFolder: "Mở Kết Quả",
       classified: "Tổng Bản Ghi Đã Phân Loại",
       classifiedBody:
         "Phần backend Rust xử lý từng dòng với bộ đệm đọc và ghi, nên mức dùng bộ nhớ vẫn ổn định ngay cả với các tệp rất lớn.",
       heroBadge: "Tauri v2 + xử lý luồng bằng Rust",
       heroTitle: "Phân loại danh sách email cực lớn mà không chạm trần RAM.",
       heroBody:
-        "Lọc tệp `.txt` và `.csv` theo từng dòng vào 4 nhóm Không hợp lệ, Công cộng, Giáo dục/Chính phủ và Doanh nghiệp với tiến độ trực tiếp cùng khả năng xử lý tệp native trên desktop.",
+        "Lọc tệp `.txt` và `.csv` theo từng dòng vào 5 nhóm: Không hợp lệ, Công cộng, Giáo dục/Chính phủ, Tùy chọn và Khác, với tiến độ trực tiếp cùng khả năng xử lý tệp native trên desktop.",
       language: "Ngôn ngữ",
       english: "English",
       vietnamese: "Tiếng Việt",
@@ -162,7 +190,13 @@ export const translations = {
       summaryInvalidRate: "Tỷ Lệ Không Hợp Lệ",
       summaryPublicRate: "Tỷ Lệ Công Cộng",
       summaryEduRate: "Tỷ Lệ Giáo Dục / Chính Phủ",
-      summaryCustomRate: "Tỷ Lệ Doanh Nghiệp",
+      summaryTargetedRate: "Tỷ Lệ Tùy Chọn",
+      summaryCustomRate: "Tỷ Lệ Khác",
+      openHistory: "Lịch sử",
+      historyTitle: "Lịch Sử Phiên Lọc",
+      clearHistory: "Xóa Lịch Sử",
+      emptyHistory: "Chưa có lưu trữ nào.",
+      close: "Đóng",
     },
   },
 } satisfies Record<Language, TranslationShape>;
