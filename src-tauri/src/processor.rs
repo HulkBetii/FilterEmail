@@ -71,6 +71,7 @@ struct Writers {
 }
 
 #[derive(Copy, Clone)]
+#[allow(dead_code)]
 enum EmailGroup {
     Invalid,
     Public,
