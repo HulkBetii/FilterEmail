@@ -31,6 +31,8 @@ import {
   History,
   X,
   Trash2,
+  Wifi,
+  WifiOff,
 } from "lucide-react";
 
 type ProcessingPayload = {
@@ -127,6 +129,7 @@ export default function App() {
   const [language, setLanguage] = useState<Language>(getSavedLanguage);
   const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
   const [checkMx, setCheckMx] = useState(false);
+  const [port25Status, setPort25Status] = useState<"idle" | "checking" | "open" | "closed">("idle");
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
 
@@ -138,6 +141,18 @@ export default function App() {
       } catch (e) {}
     }
   }, []);
+
+  // Check port 25 whenever MX scan is toggled on
+  useEffect(() => {
+    if (!checkMx) {
+      setPort25Status("idle");
+      return;
+    }
+    setPort25Status("checking");
+    invoke<boolean>("check_port_25")
+      .then((open) => setPort25Status(open ? "open" : "closed"))
+      .catch(() => setPort25Status("closed"));
+  }, [checkMx]);
   const [outputDir, setOutputDir] = useState("");
   const [targetDomains, setTargetDomains] = useState("");
   const [lastOutputDir, setLastOutputDir] = useState("");
@@ -620,6 +635,25 @@ export default function App() {
                     <div className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${checkMx ? "translate-x-5" : "translate-x-0"}`} />
                   </div>
                 </label>
+
+                {/* Port 25 status badge */}
+                {port25Status !== "idle" && (
+                  <div className={`flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-semibold ring-1 transition-all ${
+                    port25Status === "checking"
+                      ? "bg-amber-50 text-amber-700 ring-amber-200"
+                      : port25Status === "open"
+                        ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
+                        : "bg-red-50 text-red-700 ring-red-200"
+                  }`}>
+                    {port25Status === "checking" ? (
+                      <><LoaderCircle className="h-3.5 w-3.5 animate-spin shrink-0" /><span>Port 25: {language === "vi" ? "Đang kiểm tra..." : "Checking..."}</span></>
+                    ) : port25Status === "open" ? (
+                      <><Wifi className="h-3.5 w-3.5 shrink-0" /><span>Port 25: {language === "vi" ? "Đã mở ✓" : "Open ✓"}</span></>
+                    ) : (
+                      <><WifiOff className="h-3.5 w-3.5 shrink-0" /><span>Port 25: {language === "vi" ? "Bị chặn ✗ (MX vẫn hoạt động)" : "Blocked ✗ (MX still works)"}</span></>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
 

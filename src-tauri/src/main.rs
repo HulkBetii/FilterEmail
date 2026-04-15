@@ -3,7 +3,9 @@
 mod processor;
 
 use processor::{process_file_core, ErrorPayload};
+use std::net::TcpStream;
 use std::path::Path;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 #[tauri::command(rename_all = "snake_case")]
@@ -43,12 +45,27 @@ fn emit_error_and_return(app: &AppHandle, payload: ErrorPayload) -> String {
     payload.message_en
 }
 
+/// Try a TCP connection to a known mail server on port 25.
+/// Returns true if outbound port 25 is reachable.
+#[tauri::command]
+async fn check_port_25() -> bool {
+    tauri::async_runtime::spawn_blocking(|| {
+        TcpStream::connect_timeout(
+            &"gmail-smtp-in.l.google.com:25".parse().unwrap(),
+            Duration::from_secs(4),
+        )
+        .is_ok()
+    })
+    .await
+    .unwrap_or(false)
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
-        .invoke_handler(tauri::generate_handler![process_file])
+        .invoke_handler(tauri::generate_handler![process_file, check_port_25])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
