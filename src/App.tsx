@@ -576,7 +576,7 @@ export default function App() {
                       {selectedFiles.length > 0
                         ? selectedFiles.length === 1
                           ? basename(selectedFiles[0])
-                          : `${selectedFiles.length} ${t.labels.noFile.includes("ệp") ? "tệp" : "files"}`
+                          : `${selectedFiles.length} ${language === "vi" ? "tệp" : "files"}`
                         : t.labels.noFile}
                     </span>
                   </div>
@@ -667,7 +667,7 @@ export default function App() {
                     className="group flex flex-col gap-3 overflow-hidden rounded-2xl border border-slate-100 bg-white p-4 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md"
                   >
                     <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ring-1 transition-transform group-hover:scale-110 ${card.chip}`}>
-                      <Icon className="h-4.5 w-4.5 h-5 w-5" />
+                      <Icon className="h-5 w-5" />
                     </div>
                     <div className="min-w-0">
                       <p className="text-2xl font-extrabold tracking-tight text-slate-800 leading-none">
@@ -686,6 +686,7 @@ export default function App() {
 
         </div>
       </div>
+
       {/* History Modal */}
       {isHistoryOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-sm transition-opacity">
