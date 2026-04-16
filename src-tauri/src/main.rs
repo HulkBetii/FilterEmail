@@ -6,7 +6,8 @@ use processor::{process_file_core, ErrorPayload};
 use std::net::TcpStream;
 use std::path::Path;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
+use tokio::runtime::Handle;
 
 #[tauri::command(rename_all = "snake_case")]
 async fn process_file(
@@ -15,14 +16,54 @@ async fn process_file(
     output_dir: String,
     target_domains: String,
     check_mx: bool,
+    timeout_ms: u64,
+    max_concurrent: usize,
+    use_persistent_cache: bool,
 ) -> Result<(), String> {
-    let app_handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || process_file_impl(app_handle, file_paths, output_dir, target_domains, check_mx))
-        .await
-        .map_err(|error| error.to_string())?
+    let runtime = Handle::current();
+    let persistent_cache_path = if use_persistent_cache {
+        let cache_dir = app
+            .path()
+            .app_local_data_dir()
+            .map_err(|error| error.to_string())?;
+        Some(
+            cache_dir
+                .join("cache")
+                .join("mx_cache.sqlite3")
+                .to_string_lossy()
+                .to_string(),
+        )
+    } else {
+        None
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        runtime.block_on(process_file_impl(
+            app,
+            file_paths,
+            output_dir,
+            target_domains,
+            check_mx,
+            timeout_ms,
+            max_concurrent,
+            use_persistent_cache,
+            persistent_cache_path,
+        ))
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
-fn process_file_impl(app: AppHandle, file_paths: Vec<String>, output_dir: String, target_domains: String, check_mx: bool) -> Result<(), String> {
+async fn process_file_impl(
+    app: AppHandle,
+    file_paths: Vec<String>,
+    output_dir: String,
+    target_domains: String,
+    check_mx: bool,
+    timeout_ms: u64,
+    max_concurrent: usize,
+    use_persistent_cache: bool,
+    persistent_cache_path: Option<String>,
+) -> Result<(), String> {
     let output_path = Path::new(&output_dir);
     
     let domains_vec: Vec<String> = target_domains
@@ -31,9 +72,18 @@ fn process_file_impl(app: AppHandle, file_paths: Vec<String>, output_dir: String
         .filter(|s| !s.is_empty())
         .collect();
 
-    let payload = process_file_core(file_paths, output_path, domains_vec, check_mx, |payload, event_name| {
-        app.emit(event_name, payload).map_err(|error| error.to_string())
-    })
+    let payload = process_file_core(
+        file_paths,
+        output_path,
+        domains_vec,
+        check_mx,
+        timeout_ms,
+        max_concurrent,
+        use_persistent_cache,
+        persistent_cache_path.as_deref().map(Path::new),
+        |payload, event_name| app.emit(event_name, payload).map_err(|error| error.to_string()),
+    )
+    .await
     .map_err(|error| emit_error_and_return(&app, error))?;
 
     app.emit("processing-complete", payload)

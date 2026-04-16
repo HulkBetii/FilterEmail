@@ -1,17 +1,35 @@
 use chrono::Local;
+use hickory_resolver::{
+    config::{ResolverConfig, ResolverOpts},
+    error::ResolveErrorKind,
+    proto::op::ResponseCode,
+    TokioAsyncResolver,
+};
+use idna::Config;
+use rand::Rng;
 use regex::Regex;
+use rusqlite::{params, Connection};
 use serde::Serialize;
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, File},
     io::{BufRead, BufReader, BufWriter, Write},
-    path::Path,
-    time::Instant,
+    path::{Path, PathBuf},
+    sync::{Arc, OnceLock},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use hickory_resolver::{config::{ResolverConfig, ResolverOpts}, Resolver};
+use tokio::{
+    sync::{RwLock, Semaphore},
+    task::JoinSet,
+    time::sleep,
+};
 
 const BUFFER_CAPACITY: usize = 1024 * 1024;
 const EMIT_EVERY: u64 = 500;
+const DOMAIN_SCAN_BATCH_SIZE: usize = 1_000;
+const FIRST_PASS_PROGRESS_END: f64 = 35.0;
+const DOMAIN_SCAN_PROGRESS_END: f64 = 65.0;
+const CACHE_TTL_SECS: i64 = 6 * 3600;
 const PUBLIC_DOMAINS: [&str; 19] = [
     "gmail.com",
     "yahoo.com",
@@ -33,6 +51,44 @@ const PUBLIC_DOMAINS: [&str; 19] = [
     "yahoo.com.mx",
     "yahoo.com.ph",
 ];
+const PARKING_MX_SUFFIXES: &[&str] = &[
+    "registrar-servers.com",
+    "sedoparking.com",
+    "parkingcrew.net",
+    "hugedomains.com",
+    "above.com",
+    "bodis.com",
+    "afternic.com",
+    "dan.com",
+];
+const PARKED_DOMAIN_SUFFIXES: &[&str] = &[
+    "hugedomains.com",
+    "afternic.com",
+    "dan.com",
+    "sedoparking.com",
+    "parkingcrew.net",
+    "bodis.com",
+    "above.com",
+];
+const TYPO_MAP: &[(&str, &[&str])] = &[
+    ("gmail.com", &["gmial.com", "gmai.com", "gamil.com", "gmal.com", "gnail.com"]),
+    ("yahoo.com", &["yahooo.com", "yaho.com", "yhoo.com", "yaoo.com"]),
+    ("outlook.com", &["outlok.com", "outloook.com", "outllook.com"]),
+    ("hotmail.com", &["hotmai.com", "hotmial.com", "hotmale.com"]),
+    ("icloud.com", &["iclould.com", "icolud.com"]),
+];
+const DISPOSABLE_DOMAINS: &str = include_str!("data/disposable_domains.txt");
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub enum MxStatus {
+    HasMx,
+    ARecordFallback,
+    Dead,
+    Parked,
+    Disposable,
+    TypoSuggestion(String),
+    Inconclusive,
+}
 
 #[derive(Clone, Serialize, Debug)]
 pub struct ProcessingPayload {
@@ -45,8 +101,16 @@ pub struct ProcessingPayload {
     pub custom: u64,
     pub duplicates: u64,
     pub mx_dead: u64,
+    pub mx_has_mx: u64,
+    pub mx_a_fallback: u64,
+    pub mx_inconclusive: u64,
+    pub mx_parked: u64,
+    pub mx_disposable: u64,
+    pub mx_typo: u64,
+    pub cache_hits: u64,
     pub elapsed_ms: u128,
     pub output_dir: Option<String>,
+    pub current_domain: Option<String>,
 }
 
 #[derive(Clone, Serialize, Debug)]
@@ -62,30 +126,242 @@ struct Writers {
     targeted: BufWriter<File>,
     custom: BufWriter<File>,
     mx_dead: BufWriter<File>,
+    mx_has_mx: BufWriter<File>,
+    mx_a_fallback: BufWriter<File>,
+    mx_inconclusive: BufWriter<File>,
+    mx_parked: BufWriter<File>,
+    mx_disposable: BufWriter<File>,
+    mx_typo: BufWriter<File>,
     invalid_name: String,
     public_name: String,
     edu_name: String,
     targeted_name: String,
     custom_name: String,
     mx_dead_name: String,
+    mx_has_mx_name: String,
+    mx_a_fallback_name: String,
+    mx_inconclusive_name: String,
+    mx_parked_name: String,
+    mx_disposable_name: String,
+    mx_typo_name: String,
+}
+
+#[derive(Clone, Debug, Default)]
+struct Stats {
+    invalid: u64,
+    public: u64,
+    edu: u64,
+    targeted: u64,
+    custom: u64,
+    duplicates: u64,
+    mx_dead: u64,
+    mx_has_mx: u64,
+    mx_a_fallback: u64,
+    mx_inconclusive: u64,
+    mx_parked: u64,
+    mx_disposable: u64,
+    mx_typo: u64,
+    cache_hits: u64,
 }
 
 #[derive(Copy, Clone)]
-#[allow(dead_code)]
 enum EmailGroup {
-    Invalid,
     Public,
     Edu,
     Targeted,
     Custom,
     MxDead,
+    MxHasMx,
+    MxARecordFallback,
+    MxInconclusive,
+    MxParked,
+    MxDisposable,
+    MxTypo,
 }
 
-pub fn process_file_core<F>(
+#[derive(Default)]
+pub struct DomainCache {
+    inner: RwLock<HashMap<String, MxStatus>>,
+}
+
+impl DomainCache {
+    pub async fn get(&self, domain: &str) -> Option<MxStatus> {
+        self.inner.read().await.get(domain).cloned()
+    }
+
+    pub async fn set(&self, domain: String, status: MxStatus) {
+        self.inner.write().await.insert(domain, status);
+    }
+}
+
+struct PersistentCache {
+    path: PathBuf,
+}
+
+impl PersistentCache {
+    fn new(path: &Path) -> Result<Self, ErrorPayload> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                backend_error(
+                    "Failed to create persistent cache directory.",
+                    "Không thể tạo thư mục persistent cache.",
+                    Some(error.to_string()),
+                )
+            })?;
+        }
+
+        let cache = Self {
+            path: path.to_path_buf(),
+        };
+        cache.init()?;
+        Ok(cache)
+    }
+
+    fn init(&self) -> Result<(), ErrorPayload> {
+        let conn = Connection::open(&self.path).map_err(|error| {
+            backend_error(
+                "Failed to open persistent cache database.",
+                "Không thể mở cơ sở dữ liệu persistent cache.",
+                Some(error.to_string()),
+            )
+        })?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS mx_cache (
+                domain TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                cached_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_mx_cache_cached_at ON mx_cache(cached_at);",
+        )
+        .map_err(|error| {
+            backend_error(
+                "Failed to initialize persistent cache database.",
+                "Không thể khởi tạo cơ sở dữ liệu persistent cache.",
+                Some(error.to_string()),
+            )
+        })?;
+        Ok(())
+    }
+
+    fn load_many(&self, domains: &[String]) -> Result<HashMap<String, MxStatus>, ErrorPayload> {
+        let conn = Connection::open(&self.path).map_err(|error| {
+            backend_error(
+                "Failed to open persistent cache database.",
+                "Không thể mở cơ sở dữ liệu persistent cache.",
+                Some(error.to_string()),
+            )
+        })?;
+        let cutoff = unix_now_secs() - CACHE_TTL_SECS;
+        let mut results = HashMap::new();
+
+        for domain in domains {
+            let cached = conn
+                .query_row(
+                    "SELECT status FROM mx_cache WHERE domain = ?1 AND cached_at > ?2",
+                    params![domain, cutoff],
+                    |row| row.get::<_, String>(0),
+                )
+                .ok()
+                .and_then(|value| parse_cached_status(&value));
+
+            if let Some(status) = cached {
+                results.insert(domain.clone(), status);
+            }
+        }
+
+        Ok(results)
+    }
+
+    fn store_many(&self, domain_statuses: &HashMap<String, MxStatus>) -> Result<(), ErrorPayload> {
+        if domain_statuses.is_empty() {
+            return Ok(());
+        }
+
+        let mut conn = Connection::open(&self.path).map_err(|error| {
+            backend_error(
+                "Failed to open persistent cache database.",
+                "Không thể mở cơ sở dữ liệu persistent cache.",
+                Some(error.to_string()),
+            )
+        })?;
+        let tx = conn.transaction().map_err(|error| {
+            backend_error(
+                "Failed to start persistent cache transaction.",
+                "Không thể bắt đầu transaction cho persistent cache.",
+                Some(error.to_string()),
+            )
+        })?;
+        let now = unix_now_secs();
+
+        for (domain, status) in domain_statuses {
+            tx.execute(
+                "INSERT INTO mx_cache (domain, status, cached_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(domain) DO UPDATE SET status = excluded.status, cached_at = excluded.cached_at",
+                params![domain, cached_status_value(status), now],
+            )
+            .map_err(|error| {
+                backend_error(
+                    "Failed to write persistent cache entry.",
+                    "Không thể ghi mục persistent cache.",
+                    Some(error.to_string()),
+                )
+            })?;
+        }
+
+        tx.commit().map_err(|error| {
+            backend_error(
+                "Failed to commit persistent cache transaction.",
+                "Không thể lưu transaction persistent cache.",
+                Some(error.to_string()),
+            )
+        })?;
+        Ok(())
+    }
+}
+
+fn unix_now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
+fn cached_status_value(status: &MxStatus) -> String {
+    match status {
+        MxStatus::HasMx => "has_mx".to_string(),
+        MxStatus::ARecordFallback => "a_record_fallback".to_string(),
+        MxStatus::Dead => "dead".to_string(),
+        MxStatus::Parked => "parked".to_string(),
+        MxStatus::Disposable => "disposable".to_string(),
+        MxStatus::TypoSuggestion(suggestion) => format!("typo:{suggestion}"),
+        MxStatus::Inconclusive => "inconclusive".to_string(),
+    }
+}
+
+fn parse_cached_status(value: &str) -> Option<MxStatus> {
+    match value {
+        "has_mx" => Some(MxStatus::HasMx),
+        "a_record_fallback" => Some(MxStatus::ARecordFallback),
+        "dead" => Some(MxStatus::Dead),
+        "parked" => Some(MxStatus::Parked),
+        "disposable" => Some(MxStatus::Disposable),
+        "inconclusive" => Some(MxStatus::Inconclusive),
+        _ => value
+            .strip_prefix("typo:")
+            .map(|suggestion| MxStatus::TypoSuggestion(suggestion.to_string())),
+    }
+}
+
+pub async fn process_file_core<F>(
     file_paths: Vec<String>,
     output_path: &Path,
     target_domains: Vec<String>,
     check_mx: bool,
+    timeout_ms: u64,
+    max_concurrent: usize,
+    use_persistent_cache: bool,
+    persistent_cache_path: Option<&Path>,
     mut emit_progress_event: F,
 ) -> Result<ProcessingPayload, ErrorPayload>
 where
@@ -119,13 +395,64 @@ where
     })?;
 
     let output_dir = run_output_path.to_string_lossy().to_string();
-    
-    let mut total_bytes: u64 = 0;
-    for path in &file_paths {
-        if let Ok(meta) = fs::metadata(path) {
-            total_bytes += meta.len();
+    let total_bytes = total_bytes(&file_paths);
+    let extractor_regex =
+        Regex::new(r"(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}").map_err(map_regex_error_payload)?;
+    let target_domains_set: HashSet<String> = target_domains
+        .into_iter()
+        .filter_map(|value| normalize_domain(&value).ok())
+        .collect();
+    let public_domains: HashSet<&'static str> = PUBLIC_DOMAINS.iter().copied().collect();
+    let edu_patterns = build_edu_patterns()?;
+
+    let (cache_hits, domain_statuses) = if check_mx {
+        let unique_domains = collect_unique_domains(
+            &file_paths,
+            &extractor_regex,
+            total_bytes,
+            &output_dir,
+            started_at,
+            &mut emit_progress_event,
+        )?;
+
+        let persistent_cache = if use_persistent_cache {
+            persistent_cache_path.map(PersistentCache::new).transpose()?
+        } else {
+            None
+        };
+
+        let mut domain_statuses = if let Some(cache) = &persistent_cache {
+            cache.load_many(&unique_domains)?
+        } else {
+            HashMap::new()
+        };
+        let cache_hits = domain_statuses.len() as u64;
+
+        let domains_to_scan: Vec<String> = unique_domains
+            .into_iter()
+            .filter(|domain| !domain_statuses.contains_key(domain))
+            .collect();
+
+        let freshly_scanned = scan_domains(
+            domains_to_scan,
+            timeout_ms,
+            max_concurrent,
+            total_bytes,
+            &output_dir,
+            started_at,
+            &mut emit_progress_event,
+        )
+        .await?;
+
+        if let Some(cache) = &persistent_cache {
+            cache.store_many(&freshly_scanned)?;
         }
-    }
+
+        domain_statuses.extend(freshly_scanned);
+        (cache_hits, domain_statuses)
+    } else {
+        (0, HashMap::new())
+    };
 
     let mut writers = build_writers(&run_output_path).map_err(|error| {
         error_payload_from_io(
@@ -135,34 +462,74 @@ where
         )
     })?;
 
-    let target_domains_set: HashSet<String> = target_domains.into_iter().map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).collect();
-    let public_domains: HashSet<&'static str> = PUBLIC_DOMAINS.iter().copied().collect();
-    let edu_patterns = build_edu_patterns()?;
-    let extractor_regex = Regex::new(r"(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}").map_err(map_regex_error_payload)?;
+    let payload = process_files_with_domain_statuses(
+        &file_paths,
+        total_bytes,
+        &extractor_regex,
+        &public_domains,
+        &edu_patterns,
+        &target_domains_set,
+        if check_mx {
+            ProcessingMode::VerifyDns
+        } else {
+            ProcessingMode::BasicFilter
+        },
+        cache_hits,
+        &domain_statuses,
+        &output_dir,
+        started_at,
+        &mut writers,
+        &mut emit_progress_event,
+    )?;
 
-    let resolver_opt = if check_mx {
-        Resolver::new(ResolverConfig::default(), ResolverOpts::default()).ok()
-    } else {
-        None
-    };
+    flush_writers(&mut writers)?;
 
-    let mut line = String::with_capacity(1024);
-    let mut bytes_read: u64 = 0;
-    let mut processed_lines: u64 = 0;
-    let mut invalid: u64 = 0;
-    let mut public: u64 = 0;
-    let mut edu: u64 = 0;
-    let mut targeted: u64 = 0;
-    let mut custom: u64 = 0;
-    let mut duplicates: u64 = 0;
-    let mut mx_dead: u64 = 0;
-    let mut last_emitted_pct: i64 = -1;
+    Ok(payload)
+}
 
-    let mut seen_emails: HashSet<String> = HashSet::with_capacity(100_000);
-    let mut mx_cache: HashMap<String, bool> = HashMap::with_capacity(5_000);
+fn total_bytes(file_paths: &[String]) -> u64 {
+    file_paths
+        .iter()
+        .filter_map(|path| fs::metadata(path).ok())
+        .map(|meta| meta.len())
+        .sum()
+}
+
+fn extract_email_from_line(line: &str, extractor_regex: &Regex) -> Option<String> {
+    if let Some(matched) = extractor_regex.find(line) {
+        return Some(matched.as_str().trim().to_lowercase());
+    }
+
+    line.split_whitespace()
+        .map(|token| token.trim_matches(|c: char| matches!(c, '"' | '\'' | '<' | '>' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';')))
+        .find_map(|token| {
+            let candidate = token.trim();
+            let (local, domain) = candidate.rsplit_once('@')?;
+            if local.is_empty() || domain.is_empty() || !domain.contains('.') {
+                return None;
+            }
+            normalize_domain(domain).ok()?;
+            Some(candidate.to_lowercase())
+        })
+}
+
+fn collect_unique_domains<F>(
+    file_paths: &[String],
+    extractor_regex: &Regex,
+    total_bytes: u64,
+    output_dir: &str,
+    started_at: Instant,
+    emit_progress_event: &mut F,
+) -> Result<Vec<String>, ErrorPayload>
+where
+    F: FnMut(ProcessingPayload, &str) -> Result<(), String>,
+{
+    let mut bytes_read = 0u64;
+    let mut processed_lines = 0u64;
+    let mut domains = HashSet::new();
 
     for file_path in file_paths {
-        let path = Path::new(&file_path);
+        let path = Path::new(file_path);
         if !path.exists() {
             continue;
         }
@@ -173,12 +540,284 @@ where
         };
 
         let mut reader = BufReader::with_capacity(BUFFER_CAPACITY, input_file);
-        
+        let mut line = String::with_capacity(1024);
+
         loop {
             line.clear();
             let read = match reader.read_line(&mut line) {
                 Ok(bytes) => bytes,
-                Err(_) => break, // skip file on error
+                Err(_) => break,
+            };
+
+            if read == 0 {
+                break;
+            }
+
+            processed_lines += 1;
+            bytes_read += read as u64;
+
+            if let Some(email_match) = extract_email_from_line(&line, extractor_regex) {
+                if let Some((_, domain)) = email_match.rsplit_once('@') {
+                    if let Ok(normalized_domain) = normalize_domain(domain) {
+                        domains.insert(normalized_domain);
+                    }
+                }
+            }
+
+            if processed_lines % EMIT_EVERY == 0 {
+                let payload = build_processing_payload(
+                    output_dir,
+                    processed_lines,
+                    scale_progress(total_bytes, bytes_read, FIRST_PASS_PROGRESS_END),
+                    &Stats::default(),
+                    started_at.elapsed().as_millis(),
+                    None,
+                );
+                emit_progress_event(payload, "processing-progress").ok();
+            }
+        }
+    }
+
+    Ok(domains.into_iter().collect())
+}
+
+async fn scan_domains<F>(
+    unique_domains: Vec<String>,
+    timeout_ms: u64,
+    max_concurrent: usize,
+    total_bytes: u64,
+    output_dir: &str,
+    started_at: Instant,
+    emit_progress_event: &mut F,
+) -> Result<HashMap<String, MxStatus>, ErrorPayload>
+where
+    F: FnMut(ProcessingPayload, &str) -> Result<(), String>,
+{
+    if unique_domains.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let resolver = build_resolver(timeout_ms);
+    let cache = Arc::new(DomainCache::default());
+    let semaphore = Arc::new(Semaphore::new(max_concurrent.clamp(1, 50)));
+    let total_domains = unique_domains.len();
+    let mut results = HashMap::with_capacity(total_domains);
+    let mut processed_domains = 0usize;
+    let total_lines_hint = if total_bytes == 0 {
+        total_domains as u64
+    } else {
+        0
+    };
+
+    for batch in unique_domains.chunks(DOMAIN_SCAN_BATCH_SIZE) {
+        let mut join_set = JoinSet::new();
+
+        for domain in batch {
+            let resolver = resolver.clone();
+            let cache = Arc::clone(&cache);
+            let semaphore = Arc::clone(&semaphore);
+            let domain = domain.clone();
+
+            join_set.spawn(async move {
+                let status = check_domain_mx_async(domain.clone(), resolver, cache, semaphore).await;
+                (domain, status)
+            });
+        }
+
+        while let Some(result) = join_set.join_next().await {
+            let (domain, status) = result.map_err(|error| {
+                backend_error(
+                    "Deep DNS scan task failed.",
+                    "Tác vụ quét DNS sâu thất bại.",
+                    Some(error.to_string()),
+                )
+            })?;
+
+            processed_domains += 1;
+            results.insert(domain.clone(), status);
+
+            if processed_domains % EMIT_EVERY as usize == 0 || processed_domains == total_domains {
+                let domain_progress = if total_domains == 0 {
+                    DOMAIN_SCAN_PROGRESS_END
+                } else {
+                    FIRST_PASS_PROGRESS_END
+                        + ((processed_domains as f64 / total_domains as f64)
+                            * (DOMAIN_SCAN_PROGRESS_END - FIRST_PASS_PROGRESS_END))
+                };
+                let payload = build_processing_payload(
+                    output_dir,
+                    total_lines_hint,
+                    domain_progress,
+                    &Stats::default(),
+                    started_at.elapsed().as_millis(),
+                    Some(domain),
+                );
+                emit_progress_event(payload, "processing-progress").ok();
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+async fn check_domain_mx_async(
+    domain: String,
+    resolver: TokioAsyncResolver,
+    cache: Arc<DomainCache>,
+    semaphore: Arc<Semaphore>,
+) -> MxStatus {
+    if let Some(status) = cache.get(&domain).await {
+        return status;
+    }
+
+    if let Some(suggestion) = check_typo(&domain) {
+        let status = MxStatus::TypoSuggestion(suggestion);
+        cache.set(domain, status.clone()).await;
+        return status;
+    }
+
+    if is_disposable_domain(&domain) {
+        let status = MxStatus::Disposable;
+        cache.set(domain, status.clone()).await;
+        return status;
+    }
+
+    let jitter_ms = rand::thread_rng().gen_range(0..50u64);
+    sleep(Duration::from_millis(jitter_ms)).await;
+    let permit = match semaphore.acquire().await {
+        Ok(permit) => permit,
+        Err(_) => {
+            let status = MxStatus::Inconclusive;
+            cache.set(domain, status.clone()).await;
+            return status;
+        }
+    };
+
+    let mut final_status = MxStatus::Inconclusive;
+
+    for attempt in 0..=2u8 {
+        match resolver.mx_lookup(domain.clone()).await {
+            Ok(lookup) => {
+                if lookup.iter().next().is_none() {
+                    final_status = check_a_record_fallback(&resolver, &domain).await;
+                } else {
+                    let all_parked = lookup
+                        .iter()
+                        .all(|mx| is_parked_mx(&mx.exchange().to_string()));
+                    final_status = if is_parked_domain(&domain) || all_parked {
+                        MxStatus::Parked
+                    } else {
+                        MxStatus::HasMx
+                    };
+                }
+                break;
+            }
+            Err(error) => match error.kind() {
+                ResolveErrorKind::NoRecordsFound { response_code, .. }
+                    if *response_code == ResponseCode::NXDomain =>
+                {
+                    final_status = MxStatus::Dead;
+                    break;
+                }
+                ResolveErrorKind::NoRecordsFound { response_code, .. }
+                    if *response_code == ResponseCode::NoError =>
+                {
+                    final_status = check_a_record_fallback(&resolver, &domain).await;
+                    break;
+                }
+                _ if attempt < 2 => {
+                    sleep(Duration::from_millis(80 * (attempt as u64 + 1))).await;
+                    continue;
+                }
+                _ => {
+                    final_status = MxStatus::Inconclusive;
+                    break;
+                }
+            },
+        }
+    }
+
+    drop(permit);
+    cache.set(domain, final_status.clone()).await;
+    final_status
+}
+
+async fn check_a_record_fallback(resolver: &TokioAsyncResolver, domain: &str) -> MxStatus {
+    match resolver.lookup_ip(domain).await {
+        Ok(lookup) if lookup.iter().next().is_some() => MxStatus::ARecordFallback,
+        Ok(_) => MxStatus::Dead,
+        Err(error) => match error.kind() {
+            ResolveErrorKind::NoRecordsFound { response_code, .. }
+                if *response_code == ResponseCode::NXDomain || *response_code == ResponseCode::NoError =>
+            {
+                MxStatus::Dead
+            }
+            _ => MxStatus::Inconclusive,
+        },
+    }
+}
+
+#[derive(Copy, Clone)]
+enum ProcessingMode {
+    BasicFilter,
+    VerifyDns,
+}
+
+fn build_resolver(timeout_ms: u64) -> TokioAsyncResolver {
+    let mut opts = ResolverOpts::default();
+    opts.timeout = Duration::from_millis(timeout_ms.max(250));
+    opts.attempts = 2;
+    opts.validate = false;
+    opts.cache_size = 1024;
+    opts.preserve_intermediates = true;
+    opts.rotate = true;
+    TokioAsyncResolver::tokio(ResolverConfig::default(), opts)
+}
+
+fn process_files_with_domain_statuses<F>(
+    file_paths: &[String],
+    total_bytes: u64,
+    extractor_regex: &Regex,
+    public_domains: &HashSet<&'static str>,
+    edu_patterns: &[Regex],
+    target_domains: &HashSet<String>,
+    processing_mode: ProcessingMode,
+    cache_hits: u64,
+    domain_statuses: &HashMap<String, MxStatus>,
+    output_dir: &str,
+    started_at: Instant,
+    writers: &mut Writers,
+    emit_progress_event: &mut F,
+) -> Result<ProcessingPayload, ErrorPayload>
+where
+    F: FnMut(ProcessingPayload, &str) -> Result<(), String>,
+{
+    let mut line = String::with_capacity(1024);
+    let mut bytes_read = 0u64;
+    let mut processed_lines = 0u64;
+    let mut stats = Stats::default();
+    stats.cache_hits = cache_hits;
+    let mut last_emitted_pct: i64 = -1;
+    let mut seen_emails: HashSet<String> = HashSet::with_capacity(100_000);
+
+    for file_path in file_paths {
+        let path = Path::new(file_path);
+        if !path.exists() {
+            continue;
+        }
+
+        let input_file = match File::open(path) {
+            Ok(file) => file,
+            Err(_) => continue,
+        };
+
+        let mut reader = BufReader::with_capacity(BUFFER_CAPACITY, input_file);
+
+        loop {
+            line.clear();
+            let read = match reader.read_line(&mut line) {
+                Ok(bytes) => bytes,
+                Err(_) => break,
             };
 
             if read == 0 {
@@ -188,85 +827,123 @@ where
             bytes_read += read as u64;
             processed_lines += 1;
 
-            let extracted_email = match extractor_regex.find(&line) {
-                Some(mat) => mat.as_str().trim().to_lowercase(),
+            let extracted_email = match extract_email_from_line(&line, extractor_regex) {
+                Some(matched) => matched,
                 None => {
-                    invalid += 1;
+                    stats.invalid += 1;
                     write_line(&mut writers.invalid, line.trim(), &writers.invalid_name)?;
                     continue;
                 }
             };
 
             if !seen_emails.insert(extracted_email.clone()) {
-                duplicates += 1;
+                stats.duplicates += 1;
                 continue;
             }
 
-            let (_, domain) = extracted_email.rsplit_once('@').unwrap_or(("", ""));
-            
-            // Check MX if enabled
-            let is_alive = if let Some(resolver) = &resolver_opt {
-                *mx_cache.entry(domain.to_string()).or_insert_with(|| {
-                    resolver.mx_lookup(domain).is_ok()
-                })
-            } else {
-                true
+            let (_, raw_domain) = extracted_email.rsplit_once('@').unwrap_or(("", ""));
+            let normalized_domain = match normalize_domain(raw_domain) {
+                Ok(value) => value,
+                Err(_) => {
+                    stats.invalid += 1;
+                    write_line(&mut writers.invalid, &extracted_email, &writers.invalid_name)?;
+                    continue;
+                }
             };
 
-            let group = if !is_alive {
-                EmailGroup::MxDead
+            let mx_status = if matches!(processing_mode, ProcessingMode::VerifyDns) {
+                domain_statuses
+                    .get(&normalized_domain)
+                    .cloned()
+                    .unwrap_or(MxStatus::Inconclusive)
             } else {
-                classify_email(domain, &public_domains, &edu_patterns, &target_domains_set)
+                MxStatus::HasMx
             };
+
+            let group = group_for_email(
+                &mx_status,
+                &normalized_domain,
+                public_domains,
+                edu_patterns,
+                target_domains,
+                processing_mode,
+            );
 
             match group {
-                EmailGroup::Invalid => {
-                    invalid += 1;
-                    write_line(&mut writers.invalid, &extracted_email, &writers.invalid_name)?;
-                }
                 EmailGroup::Public => {
-                    public += 1;
+                    stats.public += 1;
                     write_line(&mut writers.public, &extracted_email, &writers.public_name)?;
                 }
                 EmailGroup::Edu => {
-                    edu += 1;
+                    stats.edu += 1;
                     write_line(&mut writers.edu, &extracted_email, &writers.edu_name)?;
                 }
                 EmailGroup::Targeted => {
-                    targeted += 1;
+                    stats.targeted += 1;
                     write_line(&mut writers.targeted, &extracted_email, &writers.targeted_name)?;
                 }
                 EmailGroup::Custom => {
-                    custom += 1;
+                    stats.custom += 1;
                     write_line(&mut writers.custom, &extracted_email, &writers.custom_name)?;
                 }
                 EmailGroup::MxDead => {
-                    mx_dead += 1;
+                    stats.mx_dead += 1;
                     write_line(&mut writers.mx_dead, &extracted_email, &writers.mx_dead_name)?;
+                }
+                EmailGroup::MxHasMx => {
+                    stats.mx_has_mx += 1;
+                    write_line(&mut writers.mx_has_mx, &extracted_email, &writers.mx_has_mx_name)?;
+                }
+                EmailGroup::MxARecordFallback => {
+                    stats.mx_a_fallback += 1;
+                    write_line(
+                        &mut writers.mx_a_fallback,
+                        &extracted_email,
+                        &writers.mx_a_fallback_name,
+                    )?;
+                }
+                EmailGroup::MxInconclusive => {
+                    stats.mx_inconclusive += 1;
+                    write_line(
+                        &mut writers.mx_inconclusive,
+                        &extracted_email,
+                        &writers.mx_inconclusive_name,
+                    )?;
+                }
+                EmailGroup::MxParked => {
+                    stats.mx_parked += 1;
+                    write_line(&mut writers.mx_parked, &extracted_email, &writers.mx_parked_name)?;
+                }
+                EmailGroup::MxDisposable => {
+                    stats.mx_disposable += 1;
+                    write_line(
+                        &mut writers.mx_disposable,
+                        &extracted_email,
+                        &writers.mx_disposable_name,
+                    )?;
+                }
+                EmailGroup::MxTypo => {
+                    stats.mx_typo += 1;
+                    let typo_value = match &mx_status {
+                        MxStatus::TypoSuggestion(suggestion) => format!("{extracted_email} -> {suggestion}"),
+                        _ => extracted_email,
+                    };
+                    write_line(&mut writers.mx_typo, &typo_value, &writers.mx_typo_name)?;
                 }
             }
 
             if processed_lines % EMIT_EVERY == 0 {
-                let current_pct = if total_bytes > 0 {
-                    ((bytes_read as f64 / total_bytes as f64) * 100.0) as i64
-                } else {
-                    0
-                };
+                let verify_dns = matches!(processing_mode, ProcessingMode::VerifyDns);
+                let current_pct = scale_second_pass_progress(total_bytes, bytes_read, verify_dns) as i64;
                 if current_pct != last_emitted_pct {
                     last_emitted_pct = current_pct;
                     let payload = build_processing_payload(
-                        &output_dir,
+                        output_dir,
                         processed_lines,
-                        bytes_read,
-                        total_bytes,
-                        invalid,
-                        public,
-                        edu,
-                        targeted,
-                        custom,
-                        duplicates,
-                        mx_dead,
+                        scale_second_pass_progress(total_bytes, bytes_read, verify_dns),
+                        &stats,
                         started_at.elapsed().as_millis(),
+                        Some(normalized_domain.clone()),
                     );
                     emit_progress_event(payload, "processing-progress").ok();
                 }
@@ -274,27 +951,62 @@ where
         }
     }
 
-    flush_writer(&mut writers.invalid, "Failed to flush invalid email results to disk.", "Không thể ghi hoàn tất kết quả email không hợp lệ xuống đĩa.")?;
-    flush_writer(&mut writers.public, "Failed to flush public email results to disk.", "Không thể ghi hoàn tất kết quả email công cộng xuống đĩa.")?;
-    flush_writer(&mut writers.edu, "Failed to flush edu email results to disk.", "Không thể ghi hoàn tất kết quả email giáo dục xuống đĩa.")?;
-    flush_writer(&mut writers.targeted, "Failed to flush targeted email results to disk.", "Không thể ghi hoàn tất kết quả email chọn lọc.")?;
-    flush_writer(&mut writers.custom, "Failed to flush custom email results to disk.", "Không thể ghi hoàn tất kết quả email doanh nghiệp.")?;
-    flush_writer(&mut writers.mx_dead, "Failed to flush dead email results to disk.", "Không thể ghi tệp mail chết.")?;
-
     Ok(build_processing_payload(
-        &output_dir,
+        output_dir,
         processed_lines,
-        bytes_read,
-        total_bytes,
-        invalid,
-        public,
-        edu,
-        targeted,
-        custom,
-        duplicates,
-        mx_dead,
+        if matches!(processing_mode, ProcessingMode::VerifyDns) {
+            100.0
+        } else {
+            scale_second_pass_progress(total_bytes, bytes_read, false)
+        },
+        &stats,
         started_at.elapsed().as_millis(),
+        None,
     ))
+}
+
+fn scale_progress(total_bytes: u64, bytes_read: u64, max_progress: f64) -> f64 {
+    if total_bytes == 0 {
+        max_progress
+    } else {
+        ((bytes_read as f64 / total_bytes as f64) * max_progress).clamp(0.0, max_progress)
+    }
+}
+
+fn scale_second_pass_progress(total_bytes: u64, bytes_read: u64, check_mx: bool) -> f64 {
+    if total_bytes == 0 {
+        100.0
+    } else if check_mx {
+        let remaining = 100.0 - DOMAIN_SCAN_PROGRESS_END;
+        (DOMAIN_SCAN_PROGRESS_END + ((bytes_read as f64 / total_bytes as f64) * remaining))
+            .clamp(DOMAIN_SCAN_PROGRESS_END, 100.0)
+    } else {
+        ((bytes_read as f64 / total_bytes as f64) * 100.0).clamp(0.0, 100.0)
+    }
+}
+
+fn group_for_email(
+    mx_status: &MxStatus,
+    domain: &str,
+    public_domains: &HashSet<&'static str>,
+    edu_patterns: &[Regex],
+    target_domains: &HashSet<String>,
+    processing_mode: ProcessingMode,
+) -> EmailGroup {
+    match mx_status {
+        MxStatus::Dead => EmailGroup::MxDead,
+        MxStatus::HasMx if matches!(processing_mode, ProcessingMode::VerifyDns) => EmailGroup::MxHasMx,
+        MxStatus::ARecordFallback if matches!(processing_mode, ProcessingMode::VerifyDns) => {
+            EmailGroup::MxARecordFallback
+        }
+        MxStatus::Parked => EmailGroup::MxParked,
+        MxStatus::Disposable => EmailGroup::MxDisposable,
+        MxStatus::TypoSuggestion(_) => EmailGroup::MxTypo,
+        MxStatus::Inconclusive => EmailGroup::MxInconclusive,
+        MxStatus::HasMx | MxStatus::ARecordFallback => {
+            classify_email(domain, public_domains, edu_patterns, target_domains)
+        }
+    }
 }
 
 fn build_writers(output_path: &Path) -> Result<Writers, std::io::Error> {
@@ -304,28 +1016,111 @@ fn build_writers(output_path: &Path) -> Result<Writers, std::io::Error> {
     let targeted_name = "targeted_emails.txt".to_string();
     let custom_name = "other_emails.txt".to_string();
     let mx_dead_name = "dead_emails.txt".to_string();
-
-    let invalid = File::create(output_path.join(&invalid_name))?;
-    let public = File::create(output_path.join(&public_name))?;
-    let edu = File::create(output_path.join(&edu_name))?;
-    let targeted = File::create(output_path.join(&targeted_name))?;
-    let custom = File::create(output_path.join(&custom_name))?;
-    let mx_dead = File::create(output_path.join(&mx_dead_name))?;
+    let mx_has_mx_name = "has_mx_emails.txt".to_string();
+    let mx_a_fallback_name = "a_record_fallback_emails.txt".to_string();
+    let mx_inconclusive_name = "inconclusive_emails.txt".to_string();
+    let mx_parked_name = "parked_emails.txt".to_string();
+    let mx_disposable_name = "disposable_emails.txt".to_string();
+    let mx_typo_name = "typo_suggestions.txt".to_string();
 
     Ok(Writers {
-        invalid: BufWriter::with_capacity(BUFFER_CAPACITY, invalid),
-        public: BufWriter::with_capacity(BUFFER_CAPACITY, public),
-        edu: BufWriter::with_capacity(BUFFER_CAPACITY, edu),
-        targeted: BufWriter::with_capacity(BUFFER_CAPACITY, targeted),
-        custom: BufWriter::with_capacity(BUFFER_CAPACITY, custom),
-        mx_dead: BufWriter::with_capacity(BUFFER_CAPACITY, mx_dead),
+        invalid: BufWriter::with_capacity(BUFFER_CAPACITY, File::create(output_path.join(&invalid_name))?),
+        public: BufWriter::with_capacity(BUFFER_CAPACITY, File::create(output_path.join(&public_name))?),
+        edu: BufWriter::with_capacity(BUFFER_CAPACITY, File::create(output_path.join(&edu_name))?),
+        targeted: BufWriter::with_capacity(BUFFER_CAPACITY, File::create(output_path.join(&targeted_name))?),
+        custom: BufWriter::with_capacity(BUFFER_CAPACITY, File::create(output_path.join(&custom_name))?),
+        mx_dead: BufWriter::with_capacity(BUFFER_CAPACITY, File::create(output_path.join(&mx_dead_name))?),
+        mx_has_mx: BufWriter::with_capacity(BUFFER_CAPACITY, File::create(output_path.join(&mx_has_mx_name))?),
+        mx_a_fallback: BufWriter::with_capacity(
+            BUFFER_CAPACITY,
+            File::create(output_path.join(&mx_a_fallback_name))?,
+        ),
+        mx_inconclusive: BufWriter::with_capacity(
+            BUFFER_CAPACITY,
+            File::create(output_path.join(&mx_inconclusive_name))?,
+        ),
+        mx_parked: BufWriter::with_capacity(BUFFER_CAPACITY, File::create(output_path.join(&mx_parked_name))?),
+        mx_disposable: BufWriter::with_capacity(
+            BUFFER_CAPACITY,
+            File::create(output_path.join(&mx_disposable_name))?,
+        ),
+        mx_typo: BufWriter::with_capacity(BUFFER_CAPACITY, File::create(output_path.join(&mx_typo_name))?),
         invalid_name,
         public_name,
         edu_name,
         targeted_name,
         custom_name,
         mx_dead_name,
+        mx_has_mx_name,
+        mx_a_fallback_name,
+        mx_inconclusive_name,
+        mx_parked_name,
+        mx_disposable_name,
+        mx_typo_name,
     })
+}
+
+fn flush_writers(writers: &mut Writers) -> Result<(), ErrorPayload> {
+    flush_writer(
+        &mut writers.invalid,
+        "Failed to flush invalid email results to disk.",
+        "Không thể ghi hoàn tất kết quả email không hợp lệ xuống đĩa.",
+    )?;
+    flush_writer(
+        &mut writers.public,
+        "Failed to flush public email results to disk.",
+        "Không thể ghi hoàn tất kết quả email công cộng xuống đĩa.",
+    )?;
+    flush_writer(
+        &mut writers.edu,
+        "Failed to flush edu email results to disk.",
+        "Không thể ghi hoàn tất kết quả email giáo dục xuống đĩa.",
+    )?;
+    flush_writer(
+        &mut writers.targeted,
+        "Failed to flush targeted email results to disk.",
+        "Không thể ghi hoàn tất kết quả email chọn lọc.",
+    )?;
+    flush_writer(
+        &mut writers.custom,
+        "Failed to flush custom email results to disk.",
+        "Không thể ghi hoàn tất kết quả email doanh nghiệp.",
+    )?;
+    flush_writer(
+        &mut writers.mx_dead,
+        "Failed to flush dead email results to disk.",
+        "Không thể ghi tệp mail chết.",
+    )?;
+    flush_writer(
+        &mut writers.mx_has_mx,
+        "Failed to flush valid MX email results to disk.",
+        "Không thể ghi tệp mail có MX hợp lệ.",
+    )?;
+    flush_writer(
+        &mut writers.mx_a_fallback,
+        "Failed to flush A-record fallback email results to disk.",
+        "Không thể ghi tệp mail dùng A record fallback.",
+    )?;
+    flush_writer(
+        &mut writers.mx_inconclusive,
+        "Failed to flush inconclusive email results to disk.",
+        "Không thể ghi tệp mail cần kiểm tra thủ công.",
+    )?;
+    flush_writer(
+        &mut writers.mx_parked,
+        "Failed to flush parked email results to disk.",
+        "Không thể ghi tệp mail trỏ tới parked domain.",
+    )?;
+    flush_writer(
+        &mut writers.mx_disposable,
+        "Failed to flush disposable email results to disk.",
+        "Không thể ghi tệp mail disposable.",
+    )?;
+    flush_writer(
+        &mut writers.mx_typo,
+        "Failed to flush typo suggestion results to disk.",
+        "Không thể ghi tệp gợi ý sửa lỗi chính tả domain.",
+    )
 }
 
 fn build_run_output_dir(base_output_path: &Path, paths: &[String]) -> Result<std::path::PathBuf, ErrorPayload> {
@@ -346,13 +1141,18 @@ fn build_run_output_dir(base_output_path: &Path, paths: &[String]) -> Result<std
 }
 
 fn sanitize_path_segment(value: &str) -> String {
-    value.chars().map(|character| {
-        if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
-            character
-        } else {
-            '_'
-        }
-    }).collect::<String>().trim_matches('_').to_string()
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('_')
+        .to_string()
 }
 
 fn build_edu_patterns() -> Result<Vec<Regex>, ErrorPayload> {
@@ -383,52 +1183,107 @@ fn classify_email(
     EmailGroup::Custom
 }
 
+fn build_processing_payload(
+    output_dir: &str,
+    processed_lines: u64,
+    progress_percent: f64,
+    stats: &Stats,
+    elapsed_ms: u128,
+    current_domain: Option<String>,
+) -> ProcessingPayload {
+    ProcessingPayload {
+        processed_lines,
+        progress_percent: progress_percent.clamp(0.0, 100.0),
+        invalid: stats.invalid,
+        public: stats.public,
+        edu: stats.edu,
+        targeted: stats.targeted,
+        custom: stats.custom,
+        duplicates: stats.duplicates,
+        mx_dead: stats.mx_dead,
+        mx_has_mx: stats.mx_has_mx,
+        mx_a_fallback: stats.mx_a_fallback,
+        mx_inconclusive: stats.mx_inconclusive,
+        mx_parked: stats.mx_parked,
+        mx_disposable: stats.mx_disposable,
+        mx_typo: stats.mx_typo,
+        cache_hits: stats.cache_hits,
+        elapsed_ms,
+        output_dir: Some(output_dir.to_string()),
+        current_domain,
+    }
+}
+
 fn write_line(writer: &mut BufWriter<File>, value: &str, file_name: &str) -> Result<(), ErrorPayload> {
     writer.write_all(value.as_bytes()).map_err(|error| {
-        backend_error("Failed to write to file.", "Lỗi ghi tệp.", Some(format!("{file_name}: {error}")))
+        backend_error(
+            "Failed to write to file.",
+            "Lỗi ghi tệp.",
+            Some(format!("{file_name}: {error}")),
+        )
     })?;
     writer.write_all(b"\n").map_err(|error| {
-        backend_error("Failed to write newline.", "Lỗi ghi xuống dòng.", Some(format!("{file_name}: {error}")))
+        backend_error(
+            "Failed to write newline.",
+            "Lỗi ghi xuống dòng.",
+            Some(format!("{file_name}: {error}")),
+        )
     })
 }
 
 fn flush_writer(writer: &mut BufWriter<File>, message_en: &str, message_vi: &str) -> Result<(), ErrorPayload> {
-    writer.flush().map_err(|error| error_payload_from_io(message_en, message_vi, error))
+    writer
+        .flush()
+        .map_err(|error| error_payload_from_io(message_en, message_vi, error))
 }
 
-fn build_processing_payload(
-    output_dir: &str,
-    processed_lines: u64,
-    bytes_read: u64,
-    total_bytes: u64,
-    invalid: u64,
-    public: u64,
-    edu: u64,
-    targeted: u64,
-    custom: u64,
-    duplicates: u64,
-    mx_dead: u64,
-    elapsed_ms: u128,
-) -> ProcessingPayload {
-    let progress_percent = if total_bytes == 0 {
-        100.0
-    } else {
-        ((bytes_read as f64 / total_bytes as f64) * 100.0).clamp(0.0, 100.0)
-    };
-
-    ProcessingPayload {
-        processed_lines,
-        progress_percent,
-        invalid,
-        public,
-        edu,
-        targeted,
-        custom,
-        duplicates,
-        mx_dead,
-        elapsed_ms,
-        output_dir: Some(output_dir.to_string()),
+fn normalize_domain(raw: &str) -> Result<String, String> {
+    let lowered = raw.trim().to_lowercase();
+    let domain = lowered.trim_end_matches('.');
+    if domain.is_empty() {
+        return Err("Domain is empty".to_string());
     }
+
+    let config = Config::default().use_std3_ascii_rules(true);
+    let ascii = config.to_ascii(domain).map_err(|error| format!("IDN error: {error:?}"))?;
+    Ok(ascii)
+}
+
+fn is_parked_mx(mx_host: &str) -> bool {
+    let host = mx_host.trim_end_matches('.').to_lowercase();
+    PARKING_MX_SUFFIXES.iter().any(|suffix| host.ends_with(suffix))
+}
+
+fn is_parked_domain(domain: &str) -> bool {
+    let host = domain.trim_end_matches('.').to_lowercase();
+    PARKED_DOMAIN_SUFFIXES
+        .iter()
+        .any(|suffix| host == *suffix || host.ends_with(&format!(".{suffix}")))
+}
+
+fn check_typo(domain: &str) -> Option<String> {
+    TYPO_MAP.iter().find_map(|(correct, typos)| {
+        if typos.contains(&domain) {
+            Some((*correct).to_string())
+        } else {
+            None
+        }
+    })
+}
+
+fn disposable_domains() -> &'static HashSet<&'static str> {
+    static DISPOSABLE_SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    DISPOSABLE_SET.get_or_init(|| {
+        DISPOSABLE_DOMAINS
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect()
+    })
+}
+
+fn is_disposable_domain(domain: &str) -> bool {
+    disposable_domains().contains(domain)
 }
 
 fn backend_error(message_en: &str, message_vi: &str, detail: Option<String>) -> ErrorPayload {
@@ -458,4 +1313,220 @@ fn attach_detail_vi(message: &str, detail: Option<String>) -> String {
 
 fn map_regex_error_payload(error: regex::Error) -> ErrorPayload {
     backend_error("Regex error.", "Lỗi biểu thức chính quy.", Some(error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn normalize_domain_handles_idn_and_trailing_dot() {
+        assert_eq!(normalize_domain(" MÜNCHEN.DE. ").unwrap(), "xn--mnchen-3ya.de");
+    }
+
+    #[test]
+    fn typo_and_parked_checks_work() {
+        assert_eq!(check_typo("gmial.com"), Some("gmail.com".to_string()));
+        assert!(is_parked_mx("mx1.registrar-servers.com."));
+        assert!(is_parked_domain("hugedomains.com"));
+        assert!(is_parked_domain("shop.hugedomains.com"));
+    }
+
+    #[test]
+    fn extract_email_falls_back_for_unicode_domains() {
+        let extractor_regex =
+            Regex::new(r"(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}").unwrap();
+        let extracted = extract_email_from_line("unicode@münchen.de", &extractor_regex);
+        assert_eq!(extracted, Some("unicode@münchen.de".to_string()));
+    }
+
+    #[test]
+    fn disposable_domains_are_embedded() {
+        assert!(is_disposable_domain("mailinator.com"));
+    }
+
+    #[test]
+    fn inconclusive_and_dead_go_to_separate_outputs() {
+        let base_dir = std::env::temp_dir().join(format!(
+            "filteremail-test-{}",
+            Local::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let input_path = base_dir.join("emails.txt");
+        fs::create_dir_all(&base_dir).unwrap();
+        fs::write(
+            &input_path,
+            "alive@gmail.com\nmaybe@timeout.test\ndead@dead.test\nalive@gmail.com\n",
+        )
+        .unwrap();
+
+        let extractor_regex =
+            Regex::new(r"(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}").unwrap();
+        let public_domains: HashSet<&'static str> = PUBLIC_DOMAINS.iter().copied().collect();
+        let edu_patterns = build_edu_patterns().unwrap();
+        let target_domains = HashSet::new();
+        let output_dir = base_dir.join("output");
+        fs::create_dir_all(&output_dir).unwrap();
+        let mut writers = build_writers(&output_dir).unwrap();
+        let run_output = output_dir.to_string_lossy().to_string();
+
+        let mut domain_statuses = HashMap::new();
+        domain_statuses.insert("gmail.com".to_string(), MxStatus::HasMx);
+        domain_statuses.insert("timeout.test".to_string(), MxStatus::Inconclusive);
+        domain_statuses.insert("dead.test".to_string(), MxStatus::Dead);
+
+        let payload = process_files_with_domain_statuses(
+            &[input_path.to_string_lossy().to_string()],
+            fs::metadata(&input_path).unwrap().len(),
+            &extractor_regex,
+            &public_domains,
+            &edu_patterns,
+            &target_domains,
+            ProcessingMode::VerifyDns,
+            0,
+            &domain_statuses,
+            &run_output,
+            Instant::now(),
+            &mut writers,
+            &mut |_payload, _event| Ok(()),
+        )
+        .unwrap();
+        flush_writers(&mut writers).unwrap();
+
+        assert_eq!(payload.mx_has_mx, 1);
+        assert_eq!(payload.mx_inconclusive, 1);
+        assert_eq!(payload.mx_dead, 1);
+        assert_eq!(payload.duplicates, 1);
+
+        let dead_file = fs::read_to_string(output_dir.join("dead_emails.txt")).unwrap();
+        let inconclusive_file =
+            fs::read_to_string(output_dir.join("inconclusive_emails.txt")).unwrap();
+        assert!(dead_file.contains("dead@dead.test"));
+        assert!(inconclusive_file.contains("maybe@timeout.test"));
+    }
+
+    #[test]
+    fn verify_mode_keeps_successful_dns_results_in_explicit_buckets() {
+        let base_dir = std::env::temp_dir().join(format!(
+            "filteremail-verify-success-{}",
+            Local::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let input_path = base_dir.join("emails.txt");
+        fs::create_dir_all(&base_dir).unwrap();
+        fs::write(&input_path, "mx@gmail.com\nfallback@example.com\n").unwrap();
+
+        let extractor_regex =
+            Regex::new(r"(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}").unwrap();
+        let public_domains: HashSet<&'static str> = PUBLIC_DOMAINS.iter().copied().collect();
+        let edu_patterns = build_edu_patterns().unwrap();
+        let target_domains = HashSet::new();
+        let output_dir = base_dir.join("output");
+        fs::create_dir_all(&output_dir).unwrap();
+        let mut writers = build_writers(&output_dir).unwrap();
+        let run_output = output_dir.to_string_lossy().to_string();
+
+        let mut domain_statuses = HashMap::new();
+        domain_statuses.insert("gmail.com".to_string(), MxStatus::HasMx);
+        domain_statuses.insert("example.com".to_string(), MxStatus::ARecordFallback);
+
+        let payload = process_files_with_domain_statuses(
+            &[input_path.to_string_lossy().to_string()],
+            fs::metadata(&input_path).unwrap().len(),
+            &extractor_regex,
+            &public_domains,
+            &edu_patterns,
+            &target_domains,
+            ProcessingMode::VerifyDns,
+            0,
+            &domain_statuses,
+            &run_output,
+            Instant::now(),
+            &mut writers,
+            &mut |_payload, _event| Ok(()),
+        )
+        .unwrap();
+        flush_writers(&mut writers).unwrap();
+
+        assert_eq!(payload.mx_has_mx, 1);
+        assert_eq!(payload.mx_a_fallback, 1);
+        assert_eq!(payload.public, 0);
+        assert_eq!(payload.custom, 0);
+
+        let mx_file = fs::read_to_string(output_dir.join("has_mx_emails.txt")).unwrap();
+        let fallback_file =
+            fs::read_to_string(output_dir.join("a_record_fallback_emails.txt")).unwrap();
+        assert!(mx_file.contains("mx@gmail.com"));
+        assert!(fallback_file.contains("fallback@example.com"));
+    }
+
+    #[test]
+    fn persistent_cache_round_trip_restores_statuses() {
+        let base_dir = std::env::temp_dir().join(format!(
+            "filteremail-cache-{}",
+            Local::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let cache_path = base_dir.join("mx_cache.sqlite3");
+        let cache = PersistentCache::new(&cache_path).unwrap();
+
+        let mut values = HashMap::new();
+        values.insert("gmail.com".to_string(), MxStatus::HasMx);
+        values.insert(
+            "gmial.com".to_string(),
+            MxStatus::TypoSuggestion("gmail.com".to_string()),
+        );
+        cache.store_many(&values).unwrap();
+
+        let restored = cache
+            .load_many(&["gmail.com".to_string(), "gmial.com".to_string(), "unknown.com".to_string()])
+            .unwrap();
+
+        assert_eq!(restored.get("gmail.com"), Some(&MxStatus::HasMx));
+        assert_eq!(
+            restored.get("gmial.com"),
+            Some(&MxStatus::TypoSuggestion("gmail.com".to_string()))
+        );
+        assert!(!restored.contains_key("unknown.com"));
+    }
+
+    #[tokio::test]
+    async fn typo_is_prioritized_before_disposable_when_both_match() {
+        let resolver = build_resolver(1_500);
+        let cache = Arc::new(DomainCache::default());
+        let semaphore = Arc::new(Semaphore::new(1));
+        let status = check_domain_mx_async("gmial.com".to_string(), resolver, cache, semaphore).await;
+
+        assert_eq!(status, MxStatus::TypoSuggestion("gmail.com".to_string()));
+    }
+
+    #[test]
+    fn collect_unique_domains_deduplicates_domains() {
+        let base_dir = std::env::temp_dir().join(format!(
+            "filteremail-domains-{}",
+            Local::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let input_path = base_dir.join("emails.txt");
+        fs::create_dir_all(&base_dir).unwrap();
+        fs::write(
+            &input_path,
+            "a@gmail.com\nb@gmail.com\nc@outlook.com\nd@OUTLOOK.COM.\n",
+        )
+        .unwrap();
+
+        let extractor_regex =
+            Regex::new(r"(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}").unwrap();
+        let domains = collect_unique_domains(
+            &[input_path.to_string_lossy().to_string()],
+            &extractor_regex,
+            fs::metadata(&input_path).unwrap().len(),
+            &base_dir.to_string_lossy(),
+            Instant::now(),
+            &mut |_payload, _event| Ok(()),
+        )
+        .unwrap();
+
+        let domain_set: HashSet<String> = domains.into_iter().collect();
+        assert_eq!(domain_set.len(), 2);
+        assert!(domain_set.contains("gmail.com"));
+        assert!(domain_set.contains("outlook.com"));
+    }
 }

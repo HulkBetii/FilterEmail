@@ -1,0 +1,189 @@
+import {
+  AlertCircle,
+  CheckCircle,
+  FolderOpen,
+  SearchCheck,
+  ShieldCheck,
+  Trash2,
+} from "lucide-react";
+
+export const verifyBucketTone = {
+  mx_has_mx: {
+    panel: "border-emerald-200 bg-emerald-50",
+    label: "text-emerald-700",
+    value: "text-emerald-900",
+    item: "border-emerald-100 bg-white",
+  },
+  mx_a_fallback: {
+    panel: "border-cyan-200 bg-cyan-50",
+    label: "text-cyan-700",
+    value: "text-cyan-900",
+    item: "border-cyan-100 bg-white",
+  },
+  mx_dead: {
+    panel: "border-red-200 bg-red-50",
+    label: "text-red-600",
+    value: "text-red-900",
+    item: "border-red-100 bg-white",
+  },
+  mx_inconclusive: {
+    panel: "border-amber-200 bg-amber-50",
+    label: "text-amber-700",
+    value: "text-amber-900",
+    item: "border-amber-100 bg-white",
+  },
+  mx_parked: {
+    panel: "border-yellow-200 bg-yellow-50",
+    label: "text-yellow-700",
+    value: "text-yellow-900",
+    item: "border-yellow-100 bg-white",
+  },
+  mx_disposable: {
+    panel: "border-orange-200 bg-orange-50",
+    label: "text-orange-700",
+    value: "text-orange-900",
+    item: "border-orange-100 bg-white",
+  },
+  mx_typo: {
+    panel: "border-violet-200 bg-violet-50",
+    label: "text-violet-700",
+    value: "text-violet-900",
+    item: "border-violet-100 bg-white",
+  },
+} as const;
+
+export type VerifyBucketKey = keyof typeof verifyBucketTone;
+
+const verifyBucketIcon: Record<VerifyBucketKey, typeof CheckCircle> = {
+  mx_has_mx: CheckCircle,
+  mx_a_fallback: FolderOpen,
+  mx_dead: AlertCircle,
+  mx_inconclusive: SearchCheck,
+  mx_parked: ShieldCheck,
+  mx_disposable: Trash2,
+  mx_typo: SearchCheck,
+};
+
+export function VerifyHeroCard({
+  bucket,
+  label,
+  value,
+  fileName,
+}: {
+  bucket: VerifyBucketKey;
+  label: string;
+  value: string;
+  fileName: string;
+}) {
+  const Icon = verifyBucketIcon[bucket];
+  const tone = verifyBucketTone[bucket];
+  const solidIconBg = {
+    mx_has_mx: "bg-emerald-600 shadow-emerald-600/30",
+    mx_a_fallback: "bg-cyan-600 shadow-cyan-600/30",
+    mx_dead: "bg-red-600 shadow-red-600/30",
+    mx_inconclusive: "bg-amber-500 shadow-amber-500/30",
+    mx_parked: "bg-yellow-500 shadow-yellow-500/30",
+    mx_disposable: "bg-orange-500 shadow-orange-500/30",
+    mx_typo: "bg-violet-600 shadow-violet-600/30",
+  } as const;
+
+  return (
+    <div className={`flex items-center gap-4 rounded-2xl border p-4 ${tone.panel}`}>
+      <div className={`shrink-0 rounded-xl p-2.5 text-white shadow-lg ${solidIconBg[bucket]}`}>
+        <Icon className="h-6 w-6" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className={`text-[10px] font-bold uppercase tracking-widest ${tone.label}`}>{label}</p>
+        <p className={`text-2xl font-extrabold leading-tight ${tone.value}`}>{value}</p>
+        <p className={`truncate text-[11px] font-medium ${tone.label}`}>{fileName}</p>
+      </div>
+    </div>
+  );
+}
+
+export function VerifySummaryCard({
+  bucket,
+  label,
+  value,
+}: {
+  bucket: VerifyBucketKey;
+  label: string;
+  value: string;
+}) {
+  const Icon = verifyBucketIcon[bucket];
+  const tone = verifyBucketTone[bucket];
+
+  return (
+    <div className={`rounded-2xl border p-4 ${tone.panel}`}>
+      <div className="flex items-start gap-3">
+        <div className={`rounded-xl p-2 ${tone.item}`}>
+          <Icon className={`h-4 w-4 ${tone.label}`} />
+        </div>
+        <div>
+          <div className={`text-[10px] font-bold uppercase tracking-widest ${tone.label}`}>{label}</div>
+          <div className={`mt-2 text-xl font-extrabold ${tone.value}`}>{value}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function VerifyHistoryBucketItem({
+  bucket,
+  formattedValue,
+  label,
+}: {
+  bucket: VerifyBucketKey;
+  formattedValue: string;
+  label: string;
+}) {
+  const Icon = verifyBucketIcon[bucket];
+  const tone = verifyBucketTone[bucket];
+
+  return (
+    <div className={`flex items-center justify-between rounded-lg border px-3 py-2 shadow-sm ${tone.item}`}>
+      <div className="flex items-center gap-2">
+        <Icon className={`h-3.5 w-3.5 ${tone.label}`} />
+        <div className={`text-[11px] font-medium uppercase ${tone.label}`}>{label}</div>
+      </div>
+      <div className={`text-sm font-bold ${tone.value}`}>{formattedValue}</div>
+    </div>
+  );
+}
+
+export function VerifyHistoryGroup({
+  title,
+  titleClassName,
+  className,
+  buckets,
+  getValue,
+  getLabel,
+  formatValue,
+}: {
+  title: string;
+  titleClassName: string;
+  className: string;
+  buckets: VerifyBucketKey[];
+  getValue: (bucket: VerifyBucketKey) => number;
+  getLabel: (bucket: VerifyBucketKey) => string;
+  formatValue: (value: number) => string;
+}) {
+  return (
+    <div className={className}>
+      <div className={`mb-2 text-[10px] font-bold uppercase tracking-widest ${titleClassName}`}>{title}</div>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        {buckets.map((bucket) => {
+          const value = getValue(bucket);
+          return (
+            <VerifyHistoryBucketItem
+              key={bucket}
+              bucket={bucket}
+              formattedValue={formatValue(value)}
+              label={getLabel(bucket)}
+            />
+          );
+        })}
+      </div>
+    </div>
+  );
+}
