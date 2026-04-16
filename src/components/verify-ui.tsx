@@ -5,6 +5,7 @@ import {
   SearchCheck,
   ShieldCheck,
   Trash2,
+  XCircle,
 } from "lucide-react";
 
 export const verifyBucketTone = {
@@ -50,6 +51,30 @@ export const verifyBucketTone = {
     value: "text-violet-900",
     item: "border-violet-100 bg-white",
   },
+  smtp_deliverable: {
+    panel: "border-emerald-200 bg-emerald-50",
+    label: "text-emerald-700",
+    value: "text-emerald-900",
+    item: "border-emerald-100 bg-white",
+  },
+  smtp_rejected: {
+    panel: "border-rose-200 bg-rose-50",
+    label: "text-rose-700",
+    value: "text-rose-900",
+    item: "border-rose-100 bg-white",
+  },
+  smtp_catchall: {
+    panel: "border-amber-200 bg-amber-50",
+    label: "text-amber-700",
+    value: "text-amber-900",
+    item: "border-amber-100 bg-white",
+  },
+  smtp_unknown: {
+    panel: "border-slate-200 bg-slate-50",
+    label: "text-slate-600",
+    value: "text-slate-900",
+    item: "border-slate-200 bg-white",
+  },
 } as const;
 
 export type VerifyBucketKey = keyof typeof verifyBucketTone;
@@ -62,6 +87,10 @@ const verifyBucketIcon: Record<VerifyBucketKey, typeof CheckCircle> = {
   mx_parked: ShieldCheck,
   mx_disposable: Trash2,
   mx_typo: SearchCheck,
+  smtp_deliverable: CheckCircle,
+  smtp_rejected: XCircle,
+  smtp_catchall: ShieldCheck,
+  smtp_unknown: AlertCircle,
 };
 
 export function VerifyHeroCard({
@@ -85,6 +114,10 @@ export function VerifyHeroCard({
     mx_parked: "bg-yellow-500 shadow-yellow-500/30",
     mx_disposable: "bg-orange-500 shadow-orange-500/30",
     mx_typo: "bg-violet-600 shadow-violet-600/30",
+    smtp_deliverable: "bg-emerald-600 shadow-emerald-600/30",
+    smtp_rejected: "bg-rose-600 shadow-rose-600/30",
+    smtp_catchall: "bg-amber-500 shadow-amber-500/30",
+    smtp_unknown: "bg-slate-600 shadow-slate-600/30",
   } as const;
 
   return (

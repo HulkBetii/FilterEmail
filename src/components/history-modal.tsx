@@ -17,6 +17,12 @@ type ProcessingPayload = {
   mx_parked: number;
   mx_disposable: number;
   mx_typo: number;
+  smtp_deliverable: number;
+  smtp_rejected: number;
+  smtp_catchall: number;
+  smtp_unknown: number;
+  smtp_enabled: boolean;
+  smtp_elapsed_ms: number;
   cache_hits: number;
   elapsed_ms: number;
   output_dir?: string;
@@ -127,6 +133,11 @@ export function HistoryModal({
                 entry.stats.mx_parked +
                 entry.stats.mx_disposable +
                 entry.stats.mx_typo;
+              const smtpChecked =
+                entry.stats.smtp_deliverable +
+                entry.stats.smtp_rejected +
+                entry.stats.smtp_catchall +
+                entry.stats.smtp_unknown;
               const historyCards = entryIsVerify
                 ? []
                 : statCards.filter((card) =>
@@ -140,6 +151,12 @@ export function HistoryModal({
                 "mx_typo",
               ];
               const failureHistoryCards: VerifyBucketKey[] = ["mx_dead"];
+              const smtpHistoryCards: VerifyBucketKey[] = [
+                "smtp_deliverable",
+                "smtp_rejected",
+                "smtp_catchall",
+                "smtp_unknown",
+              ];
 
               return (
                 <div
@@ -253,6 +270,17 @@ export function HistoryModal({
                           getLabel={(bucket) => labels[bucket]}
                           formatValue={formatNumber}
                         />
+                        {entry.stats.smtp_enabled && (
+                          <VerifyHistoryGroup
+                            title={`${labels.historySmtpGroup} • ${formatNumber(smtpChecked)}`}
+                            titleClassName="text-slate-700"
+                            className="rounded-xl border border-slate-200 bg-slate-50 p-3"
+                            buckets={smtpHistoryCards}
+                            getValue={(bucket) => entry.stats[bucket] || 0}
+                            getLabel={(bucket) => labels[bucket]}
+                            formatValue={formatNumber}
+                          />
+                        )}
                       </div>
                     ) : (
                       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
@@ -277,6 +305,9 @@ export function HistoryModal({
 
                     <div className="text-right text-[10px] font-medium text-slate-400">
                       {labels.elapsed}: {(entry.stats.elapsed_ms / 1000).toFixed(2)}s
+                      {entry.stats.smtp_enabled
+                        ? ` • ${labels.smtpElapsed}: ${(entry.stats.smtp_elapsed_ms / 1000).toFixed(2)}s`
+                        : ""}
                     </div>
                   </div>
                 </div>

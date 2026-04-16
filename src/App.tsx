@@ -62,6 +62,12 @@ type ProcessingPayload = {
   mx_parked: number;
   mx_disposable: number;
   mx_typo: number;
+  smtp_deliverable: number;
+  smtp_rejected: number;
+  smtp_catchall: number;
+  smtp_unknown: number;
+  smtp_enabled: boolean;
+  smtp_elapsed_ms: number;
   cache_hits: number;
   elapsed_ms: number;
   output_dir?: string;
@@ -97,6 +103,12 @@ const initialStats: ProcessingPayload = {
   mx_parked: 0,
   mx_disposable: 0,
   mx_typo: 0,
+  smtp_deliverable: 0,
+  smtp_rejected: 0,
+  smtp_catchall: 0,
+  smtp_unknown: 0,
+  smtp_enabled: false,
+  smtp_elapsed_ms: 0,
   cache_hits: 0,
   elapsed_ms: 0,
   current_domain: null,
@@ -189,6 +201,11 @@ function isVerifyStats(stats: ProcessingPayload) {
     stats.mx_parked > 0 ||
     stats.mx_disposable > 0 ||
     stats.mx_typo > 0 ||
+    stats.smtp_enabled ||
+    stats.smtp_deliverable > 0 ||
+    stats.smtp_rejected > 0 ||
+    stats.smtp_catchall > 0 ||
+    stats.smtp_unknown > 0 ||
     stats.cache_hits > 0
   );
 }
@@ -200,6 +217,9 @@ export default function App() {
   const [timeoutMs, setTimeoutMs] = useState(DEFAULT_TIMEOUT_MS);
   const [maxConcurrent, setMaxConcurrent] = useState(DEFAULT_MAX_CONCURRENT);
   const [usePersistentCache, setUsePersistentCache] = useState(false);
+  const [smtpEnabled, setSmtpEnabled] = useState(false);
+  const [vpsApiUrl, setVpsApiUrl] = useState("");
+  const [vpsApiKey, setVpsApiKey] = useState("");
   const [port25Status, setPort25Status] = useState<"idle" | "checking" | "open" | "closed">("idle");
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
@@ -277,6 +297,18 @@ export default function App() {
     if (savedPersistentCache === "true") {
       setUsePersistentCache(true);
     }
+    const savedSmtpEnabled = localStorage.getItem("smtpVerifyEnabled");
+    if (savedSmtpEnabled === "true") {
+      setSmtpEnabled(true);
+    }
+    const savedVpsUrl = localStorage.getItem("smtpVerifyVpsApiUrl");
+    if (savedVpsUrl) {
+      setVpsApiUrl(savedVpsUrl);
+    }
+    const savedVpsKey = localStorage.getItem("smtpVerifyVpsApiKey");
+    if (savedVpsKey) {
+      setVpsApiKey(savedVpsKey);
+    }
   }, []);
 
   useEffect(() => {
@@ -298,6 +330,18 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("deepDnsPersistentCache", usePersistentCache ? "true" : "false");
   }, [usePersistentCache]);
+
+  useEffect(() => {
+    localStorage.setItem("smtpVerifyEnabled", smtpEnabled ? "true" : "false");
+  }, [smtpEnabled]);
+
+  useEffect(() => {
+    localStorage.setItem("smtpVerifyVpsApiUrl", vpsApiUrl);
+  }, [vpsApiUrl]);
+
+  useEffect(() => {
+    localStorage.setItem("smtpVerifyVpsApiKey", vpsApiKey);
+  }, [vpsApiKey]);
 
   useEffect(() => {
     if (outputDir) localStorage.setItem("lastOutputDir", outputDir);
@@ -515,6 +559,16 @@ export default function App() {
   const verifyDisposableRate =
     totalClassified === 0 ? 0 : (stats.mx_disposable / totalClassified) * 100;
   const verifyTypoRate = totalClassified === 0 ? 0 : (stats.mx_typo / totalClassified) * 100;
+  const smtpCheckedCount =
+    stats.smtp_deliverable + stats.smtp_rejected + stats.smtp_catchall + stats.smtp_unknown;
+  const smtpDeliverableRate =
+    smtpCheckedCount === 0 ? 0 : (stats.smtp_deliverable / smtpCheckedCount) * 100;
+  const smtpRejectedRate =
+    smtpCheckedCount === 0 ? 0 : (stats.smtp_rejected / smtpCheckedCount) * 100;
+  const smtpCatchallRate =
+    smtpCheckedCount === 0 ? 0 : (stats.smtp_catchall / smtpCheckedCount) * 100;
+  const smtpUnknownRate =
+    smtpCheckedCount === 0 ? 0 : (stats.smtp_unknown / smtpCheckedCount) * 100;
   const validCount =
     activeTab === "verify"
       ? verifyDeliverableCount
@@ -580,6 +634,9 @@ export default function App() {
         timeout_ms: timeoutMs,
         max_concurrent: maxConcurrent,
         use_persistent_cache: usePersistentCache,
+        smtp_enabled: verifyMode ? smtpEnabled : false,
+        vps_api_url: verifyMode ? vpsApiUrl : "",
+        vps_api_key: verifyMode ? vpsApiKey : "",
       });
     } catch (error) {
       console.error("Invoke Error:", error);
@@ -739,7 +796,9 @@ export default function App() {
                       {t.labels.selectFolder}
                     </button>
                   </div>
-                </div>                {activeTab === "filter" && (
+                </div>
+
+                {activeTab === "filter" && (
                   <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
                     <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
                       {t.labels.targetedInputLabel}
@@ -757,49 +816,65 @@ export default function App() {
                 {activeTab === "verify" && (
                   <div className="animate-in fade-in slide-in-from-bottom-2 flex flex-col gap-3 duration-300">
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  <div>
-                    <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                      {t.labels.timeoutLabel}
-                    </label>
-                    <input
-                      type="number"
-                      min={250}
-                      max={5000}
-                      step={50}
-                      value={timeoutMs}
-                      onChange={(event) =>
-                        setTimeoutMs(Math.max(250, Math.min(5000, Number(event.target.value) || DEFAULT_TIMEOUT_MS)))
-                      }
-                      className="mt-1.5 w-full rounded-2xl bg-slate-50 px-3 py-2.5 text-sm text-slate-900 ring-1 ring-slate-100 transition focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-400/60"
-                    />
-                    <p className="mt-1 text-[11px] leading-relaxed text-slate-400">{t.labels.timeoutHint}</p>
-                  </div>
+                      <div>
+                        <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                          {t.labels.timeoutLabel}
+                        </label>
+                        <input
+                          type="number"
+                          min={250}
+                          max={5000}
+                          step={50}
+                          value={timeoutMs}
+                          onChange={(event) =>
+                            setTimeoutMs(
+                              Math.max(
+                                250,
+                                Math.min(5000, Number(event.target.value) || DEFAULT_TIMEOUT_MS),
+                              ),
+                            )
+                          }
+                          className="mt-1.5 w-full rounded-2xl bg-slate-50 px-3 py-2.5 text-sm text-slate-900 ring-1 ring-slate-100 transition focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-400/60"
+                        />
+                        <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
+                          {t.labels.timeoutHint}
+                        </p>
+                      </div>
 
-                  <div>
-                    <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                      {t.labels.concurrencyLabel}
-                    </label>
-                    <input
-                      type="number"
-                      min={1}
-                      max={50}
-                      step={1}
-                      value={maxConcurrent}
-                      onChange={(event) =>
-                        setMaxConcurrent(
-                          Math.max(1, Math.min(50, Number(event.target.value) || DEFAULT_MAX_CONCURRENT)),
-                        )
-                      }
-                      className="mt-1.5 w-full rounded-2xl bg-slate-50 px-3 py-2.5 text-sm text-slate-900 ring-1 ring-slate-100 transition focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-400/60"
-                    />
-                    <p className="mt-1 text-[11px] leading-relaxed text-slate-400">{t.labels.concurrencyHint}</p>
-                  </div>
-                </div>
+                      <div>
+                        <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                          {t.labels.concurrencyLabel}
+                        </label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={50}
+                          step={1}
+                          value={maxConcurrent}
+                          onChange={(event) =>
+                            setMaxConcurrent(
+                              Math.max(
+                                1,
+                                Math.min(50, Number(event.target.value) || DEFAULT_MAX_CONCURRENT),
+                              ),
+                            )
+                          }
+                          className="mt-1.5 w-full rounded-2xl bg-slate-50 px-3 py-2.5 text-sm text-slate-900 ring-1 ring-slate-100 transition focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-400/60"
+                        />
+                        <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
+                          {t.labels.concurrencyHint}
+                        </p>
+                      </div>
+                    </div>
 
                     <label className="flex cursor-pointer items-start justify-between gap-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-3 transition hover:bg-slate-100">
                       <div className="min-w-0">
-                        <span className="text-sm font-semibold text-slate-700">{t.labels.persistentCacheLabel}</span>
-                        <p className="mt-1 text-[11px] leading-relaxed text-slate-400">{t.labels.persistentCacheHint}</p>
+                        <span className="text-sm font-semibold text-slate-700">
+                          {t.labels.persistentCacheLabel}
+                        </span>
+                        <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
+                          {t.labels.persistentCacheHint}
+                        </p>
                       </div>
                       <input
                         type="checkbox"
@@ -812,6 +887,52 @@ export default function App() {
                     {usePersistentCache && (
                       <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs font-medium leading-relaxed text-emerald-800">
                         {t.labels.cacheStatus(stats.cache_hits)}
+                      </div>
+                    )}
+
+                    <label className="flex cursor-pointer items-start justify-between gap-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-3 transition hover:bg-slate-100">
+                      <div className="min-w-0">
+                        <span className="text-sm font-semibold text-slate-700">
+                          {t.labels.smtpVerifyLabel}
+                        </span>
+                        <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
+                          {t.labels.smtpVerifyHint}
+                        </p>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={smtpEnabled}
+                        onChange={(event) => setSmtpEnabled(event.target.checked)}
+                        className="mt-1 h-4 w-4 shrink-0 accent-sky-500"
+                      />
+                    </label>
+
+                    {smtpEnabled && (
+                      <div className="grid grid-cols-1 gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 sm:grid-cols-2">
+                        <div className="sm:col-span-2">
+                          <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                            {t.labels.vpsApiUrlLabel}
+                          </label>
+                          <input
+                            type="url"
+                            value={vpsApiUrl}
+                            onChange={(event) => setVpsApiUrl(event.target.value)}
+                            placeholder={t.labels.vpsApiUrlPlaceholder}
+                            className="mt-1.5 w-full rounded-2xl bg-white px-3 py-2.5 text-sm text-slate-900 ring-1 ring-slate-100 transition placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-sky-400/60"
+                          />
+                        </div>
+                        <div className="sm:col-span-2">
+                          <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                            {t.labels.vpsApiKeyLabel}
+                          </label>
+                          <input
+                            type="password"
+                            value={vpsApiKey}
+                            onChange={(event) => setVpsApiKey(event.target.value)}
+                            placeholder={t.labels.vpsApiKeyPlaceholder}
+                            className="mt-1.5 w-full rounded-2xl bg-white px-3 py-2.5 text-sm text-slate-900 ring-1 ring-slate-100 transition placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-sky-400/60"
+                          />
+                        </div>
                       </div>
                     )}
 
@@ -875,12 +996,69 @@ export default function App() {
 
           <div className="space-y-3 lg:col-span-7">
             {verifyMode && (
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <VerifyHeroCard bucket="mx_has_mx" label={t.labels.mx_has_mx} value={formatLocaleNumber(stats.mx_has_mx, language)} fileName="has_mx_emails.txt" />
-                <VerifyHeroCard bucket="mx_a_fallback" label={t.labels.mx_a_fallback} value={formatLocaleNumber(stats.mx_a_fallback, language)} fileName="a_record_fallback_emails.txt" />
-                <VerifyHeroCard bucket="mx_dead" label={t.labels.mx_dead} value={formatLocaleNumber(stats.mx_dead, language)} fileName="dead_emails.txt" />
-                <VerifyHeroCard bucket="mx_inconclusive" label={t.labels.mx_inconclusive} value={formatLocaleNumber(stats.mx_inconclusive, language)} fileName="inconclusive_emails.txt" />
-              </div>
+              <>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <VerifyHeroCard
+                    bucket="mx_has_mx"
+                    label={t.labels.mx_has_mx}
+                    value={formatLocaleNumber(stats.mx_has_mx, language)}
+                    fileName="11_dns_mx_hop_le__has_mx.txt"
+                  />
+                  <VerifyHeroCard
+                    bucket="mx_a_fallback"
+                    label={t.labels.mx_a_fallback}
+                    value={formatLocaleNumber(stats.mx_a_fallback, language)}
+                    fileName="12_dns_fallback_a_record.txt"
+                  />
+                  <VerifyHeroCard
+                    bucket="mx_dead"
+                    label={t.labels.mx_dead}
+                    value={formatLocaleNumber(stats.mx_dead, language)}
+                    fileName="10_dns_domain_chet__dead.txt"
+                  />
+                  <VerifyHeroCard
+                    bucket="mx_inconclusive"
+                    label={t.labels.mx_inconclusive}
+                    value={formatLocaleNumber(stats.mx_inconclusive, language)}
+                    fileName="13_dns_can_xem_them__inconclusive.txt"
+                  />
+                </div>
+
+                {stats.smtp_enabled && (
+                  <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm ring-1 ring-slate-100">
+                    <div className="mb-3 flex flex-col gap-1">
+                      <h3 className="text-sm font-bold text-slate-900">{t.labels.smtpSummaryTitle}</h3>
+                      <p className="text-xs leading-relaxed text-slate-500">{t.labels.smtpSummaryBody}</p>
+                    </div>
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <VerifyHeroCard
+                        bucket="smtp_deliverable"
+                        label={t.labels.smtp_deliverable}
+                        value={formatLocaleNumber(stats.smtp_deliverable, language)}
+                        fileName="20_smtp_gui_duoc__deliverable.txt"
+                      />
+                      <VerifyHeroCard
+                        bucket="smtp_rejected"
+                        label={t.labels.smtp_rejected}
+                        value={formatLocaleNumber(stats.smtp_rejected, language)}
+                        fileName="21_smtp_tu_choi__rejected.txt"
+                      />
+                      <VerifyHeroCard
+                        bucket="smtp_catchall"
+                        label={t.labels.smtp_catchall}
+                        value={formatLocaleNumber(stats.smtp_catchall, language)}
+                        fileName="22_smtp_catch_all.txt"
+                      />
+                      <VerifyHeroCard
+                        bucket="smtp_unknown"
+                        label={t.labels.smtp_unknown}
+                        value={formatLocaleNumber(stats.smtp_unknown, language)}
+                        fileName="23_smtp_chua_ro__unknown.txt"
+                      />
+                    </div>
+                  </section>
+                )}
+              </>
             )}
 
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
@@ -956,6 +1134,11 @@ export default function App() {
             verifyDisposableRate={verifyDisposableRate}
             verifyTypoRate={verifyTypoRate}
             verifyDomainCount={verifyDomainCount}
+            smtpCheckedCount={smtpCheckedCount}
+            smtpDeliverableRate={smtpDeliverableRate}
+            smtpRejectedRate={smtpRejectedRate}
+            smtpCatchallRate={smtpCatchallRate}
+            smtpUnknownRate={smtpUnknownRate}
             invalidRate={invalidRate}
             publicRate={publicRate}
             eduRate={eduRate}

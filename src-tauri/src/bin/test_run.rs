@@ -1,6 +1,13 @@
 #[path = "../processor.rs"]
 mod processor;
+#[path = "../smtp_client.rs"]
+mod smtp_client;
+#[path = "../smtp_status.rs"]
+mod smtp_status;
+#[path = "../smtp_verify.rs"]
+mod smtp_verify;
 
+use processor::ProcessingPayload;
 use std::path::Path;
 
 #[tokio::main]
@@ -20,10 +27,13 @@ async fn main() {
         25,
         false,
         None,
-        |payload, event| {
+        false,
+        "",
+        "",
+        |payload: ProcessingPayload, event| {
             println!("Event {}: {:.1}%", event, payload.progress_percent);
             Ok(())
-        }
+        },
     )
     .await;
     println!("{:#?}", result);
@@ -38,9 +48,10 @@ async fn main() {
         25,
         false,
         None,
-        |_payload, _event| {
-            Ok(())
-        }
+        false,
+        "",
+        "",
+        |_payload, _event| Ok(()),
     )
     .await;
     println!("{:#?}", result_mx);

@@ -4,10 +4,17 @@ import { translations, type Language } from "../i18n";
 type ProcessingPayload = {
   mx_dead: number;
   mx_has_mx: number;
+  mx_a_fallback: number;
   mx_inconclusive: number;
   mx_parked: number;
   mx_disposable: number;
   mx_typo: number;
+  smtp_deliverable: number;
+  smtp_rejected: number;
+  smtp_catchall: number;
+  smtp_unknown: number;
+  smtp_enabled: boolean;
+  smtp_elapsed_ms: number;
   cache_hits: number;
 };
 
@@ -30,6 +37,11 @@ export function FinalSummary({
   verifyDisposableRate,
   verifyTypoRate,
   verifyDomainCount,
+  smtpCheckedCount,
+  smtpDeliverableRate,
+  smtpRejectedRate,
+  smtpCatchallRate,
+  smtpUnknownRate,
   invalidRate,
   publicRate,
   eduRate,
@@ -55,6 +67,11 @@ export function FinalSummary({
   verifyDisposableRate: number;
   verifyTypoRate: number;
   verifyDomainCount: number;
+  smtpCheckedCount: number;
+  smtpDeliverableRate: number;
+  smtpRejectedRate: number;
+  smtpCatchallRate: number;
+  smtpUnknownRate: number;
   invalidRate: number;
   publicRate: number;
   eduRate: number;
@@ -164,6 +181,57 @@ export function FinalSummary({
                 : `${labels.summaryVerified}: ${formatNumber(verifyDeliverableCount)}`}
             </div>
           </div>
+
+          {stats.smtp_enabled && (
+            <>
+              <div className="mt-5">
+                <h4 className="text-sm font-bold text-slate-900">{labels.smtpSummaryTitle}</h4>
+                <p className="mt-1 text-sm leading-relaxed text-slate-500">{labels.smtpSummaryBody}</p>
+              </div>
+
+              <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                    {labels.smtpChecked}
+                  </div>
+                  <div className="mt-2 text-2xl font-extrabold text-slate-900">
+                    {formatNumber(smtpCheckedCount)}
+                  </div>
+                </div>
+                <VerifySummaryCard
+                  bucket="smtp_deliverable"
+                  label={labels.smtp_deliverable}
+                  value={`${formatNumber(stats.smtp_deliverable)} • ${smtpDeliverableRate.toFixed(1)}%`}
+                />
+                <VerifySummaryCard
+                  bucket="smtp_rejected"
+                  label={labels.smtp_rejected}
+                  value={`${formatNumber(stats.smtp_rejected)} • ${smtpRejectedRate.toFixed(1)}%`}
+                />
+                <VerifySummaryCard
+                  bucket="smtp_unknown"
+                  label={labels.smtp_unknown}
+                  value={`${formatNumber(stats.smtp_unknown)} • ${smtpUnknownRate.toFixed(1)}%`}
+                />
+              </div>
+
+              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <VerifySummaryCard
+                  bucket="smtp_catchall"
+                  label={labels.smtp_catchall}
+                  value={`${formatNumber(stats.smtp_catchall)} • ${smtpCatchallRate.toFixed(1)}%`}
+                />
+                <div className="rounded-2xl bg-slate-50 p-4">
+                  <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                    {labels.smtpElapsed}
+                  </div>
+                  <div className="mt-2 text-xl font-extrabold text-slate-900">
+                    {(stats.smtp_elapsed_ms / 1000).toFixed(2)}s
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
         </>
       ) : (
         <>

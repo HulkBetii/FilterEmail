@@ -1,7 +1,13 @@
 #[path = "../processor.rs"]
 mod processor;
+#[path = "../smtp_client.rs"]
+mod smtp_client;
+#[path = "../smtp_status.rs"]
+mod smtp_status;
+#[path = "../smtp_verify.rs"]
+mod smtp_verify;
 
-use processor::process_file_core;
+use processor::{ProcessingPayload, process_file_core};
 use std::{env, path::PathBuf, process::ExitCode};
 
 #[tokio::main]
@@ -28,7 +34,10 @@ async fn main() -> ExitCode {
         25,
         false,
         None,
-        |payload, event_name| {
+        false,
+        "",
+        "",
+        |payload: ProcessingPayload, event_name| {
         println!(
             "{event_name}: lines={}, invalid={}, public={}, edu={}, custom={}, inconclusive={}, progress={:.1}%",
             payload.processed_lines,

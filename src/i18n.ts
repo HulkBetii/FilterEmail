@@ -26,6 +26,10 @@ type TranslationShape = {
     mx_parked: string;
     mx_disposable: string;
     mx_typo: string;
+    smtp_deliverable: string;
+    smtp_rejected: string;
+    smtp_catchall: string;
+    smtp_unknown: string;
     progress: string;
     linesProcessed: string;
     elapsed: string;
@@ -46,6 +50,12 @@ type TranslationShape = {
     concurrencyHint: string;
     persistentCacheLabel: string;
     persistentCacheHint: string;
+    smtpVerifyLabel: string;
+    smtpVerifyHint: string;
+    vpsApiUrlLabel: string;
+    vpsApiUrlPlaceholder: string;
+    vpsApiKeyLabel: string;
+    vpsApiKeyPlaceholder: string;
     cacheStatus: (hits: number) => string;
     cacheCoverage: (hits: number, total: number) => string;
     reviewNote: string;
@@ -86,6 +96,7 @@ type TranslationShape = {
     historySuccessGroup: string;
     historyReviewGroup: string;
     historyFailureGroup: string;
+    historySmtpGroup: string;
     clearHistory: string;
     emptyHistory: string;
     close: string;
@@ -93,6 +104,10 @@ type TranslationShape = {
     valid: string;
     deadDomains: string;
     reviewDomains: string;
+    smtpSummaryTitle: string;
+    smtpSummaryBody: string;
+    smtpChecked: string;
+    smtpElapsed: string;
     tabBasicFilter: string;
     tabDnsVerify: string;
   };
@@ -127,6 +142,10 @@ export const translations = {
       mx_parked: "Parked",
       mx_disposable: "Disposable",
       mx_typo: "Typos",
+      smtp_deliverable: "SMTP Deliverable",
+      smtp_rejected: "SMTP Rejected",
+      smtp_catchall: "SMTP Catch-All",
+      smtp_unknown: "SMTP Unknown",
       progress: "Progress",
       linesProcessed: "Lines Processed",
       elapsed: "Time Elapsed",
@@ -148,6 +167,13 @@ export const translations = {
       concurrencyHint: "Recommended 30-50 to balance speed and resolver pressure.",
       persistentCacheLabel: "Persistent DNS Cache",
       persistentCacheHint: "Save DNS verification results in SQLite for 6 hours to speed up repeated scans.",
+      smtpVerifyLabel: "SMTP Verify (VPS)",
+      smtpVerifyHint:
+        "After DNS finishes, send only Has MX domains to the VPS SMTP probe service for RCPT-only verification.",
+      vpsApiUrlLabel: "VPS API URL",
+      vpsApiUrlPlaceholder: "https://your-vps.example.com",
+      vpsApiKeyLabel: "VPS API Key",
+      vpsApiKeyPlaceholder: "Bearer key for /verify/smtp",
       cacheStatus: (hits: number) => `SQLite cache enabled • TTL 6h • ${hits.toLocaleString("en-US")} cache hit(s)`,
       cacheCoverage: (hits: number, total: number) =>
         `${hits.toLocaleString("en-US")}/${total.toLocaleString("en-US")} domains served from cache`,
@@ -194,6 +220,7 @@ export const translations = {
       historySuccessGroup: "Success",
       historyReviewGroup: "Review",
       historyFailureGroup: "Failure",
+      historySmtpGroup: "SMTP",
       clearHistory: "Clear History",
       emptyHistory: "No history records yet.",
       close: "Close",
@@ -201,6 +228,11 @@ export const translations = {
       valid: "Valid",
       deadDomains: "Dead",
       reviewDomains: "Review",
+      smtpSummaryTitle: "SMTP Verification",
+      smtpSummaryBody:
+        "This layer runs only for domains that already passed DNS with a valid MX record.",
+      smtpChecked: "SMTP Checked",
+      smtpElapsed: "SMTP Time",
       tabBasicFilter: "Basic Filter",
       tabDnsVerify: "Verify DNS",
     },
@@ -233,6 +265,10 @@ export const translations = {
       mx_parked: "Parked",
       mx_disposable: "Disposable",
       mx_typo: "Sai chính tả",
+      smtp_deliverable: "SMTP Có Thể Gửi",
+      smtp_rejected: "SMTP Từ Chối",
+      smtp_catchall: "SMTP Catch-All",
+      smtp_unknown: "SMTP Chưa Rõ",
       progress: "Tiến độ",
       linesProcessed: "Số dòng đã xử lý",
       elapsed: "Thời gian đã trôi qua",
@@ -254,6 +290,13 @@ export const translations = {
       concurrencyHint: "Khuyên dùng 30-50 để cân bằng tốc độ và áp lực lên resolver.",
       persistentCacheLabel: "Persistent DNS Cache",
       persistentCacheHint: "Lưu kết quả xác minh DNS vào SQLite trong 6 giờ để tăng tốc các lần quét lặp lại.",
+      smtpVerifyLabel: "SMTP Verify (VPS)",
+      smtpVerifyHint:
+        "Sau khi DNS xong, chỉ các domain Has MX mới được gửi tới VPS để probe RCPT mà không gửi email thật.",
+      vpsApiUrlLabel: "VPS API URL",
+      vpsApiUrlPlaceholder: "https://your-vps.example.com",
+      vpsApiKeyLabel: "VPS API Key",
+      vpsApiKeyPlaceholder: "Bearer key cho /verify/smtp",
       cacheStatus: (hits: number) => `SQLite cache đang bật • TTL 6 giờ • ${hits.toLocaleString("vi-VN")} cache hit`,
       cacheCoverage: (hits: number, total: number) =>
         `${hits.toLocaleString("vi-VN")}/${total.toLocaleString("vi-VN")} domain lấy từ cache`,
@@ -300,6 +343,7 @@ export const translations = {
       historySuccessGroup: "Thành công",
       historyReviewGroup: "Cần review",
       historyFailureGroup: "Lỗi",
+      historySmtpGroup: "SMTP",
       clearHistory: "Xóa Lịch Sử",
       emptyHistory: "Chưa có lưu trữ nào.",
       close: "Đóng",
@@ -307,6 +351,11 @@ export const translations = {
       valid: "Hợp lệ",
       deadDomains: "Chết",
       reviewDomains: "Review",
+      smtpSummaryTitle: "Xác Minh SMTP",
+      smtpSummaryBody:
+        "Lớp này chỉ chạy cho các domain đã vượt qua DNS với MX hợp lệ.",
+      smtpChecked: "Đã Kiểm SMTP",
+      smtpElapsed: "Thời Gian SMTP",
       tabBasicFilter: "Lọc Thông Thường",
       tabDnsVerify: "Xác Minh DNS",
     },

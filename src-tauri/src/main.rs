@@ -1,8 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod processor;
+mod smtp_client;
+mod smtp_status;
+mod smtp_verify;
 
-use processor::{process_file_core, ErrorPayload};
+use processor::{ErrorPayload, process_file_core};
 use std::net::TcpStream;
 use std::path::Path;
 use std::time::Duration;
@@ -19,6 +22,9 @@ async fn process_file(
     timeout_ms: u64,
     max_concurrent: usize,
     use_persistent_cache: bool,
+    smtp_enabled: bool,
+    vps_api_url: String,
+    vps_api_key: String,
 ) -> Result<(), String> {
     let runtime = Handle::current();
     let persistent_cache_path = if use_persistent_cache {
@@ -47,6 +53,9 @@ async fn process_file(
             max_concurrent,
             use_persistent_cache,
             persistent_cache_path,
+            smtp_enabled,
+            vps_api_url,
+            vps_api_key,
         ))
     })
     .await
@@ -63,9 +72,12 @@ async fn process_file_impl(
     max_concurrent: usize,
     use_persistent_cache: bool,
     persistent_cache_path: Option<String>,
+    smtp_enabled: bool,
+    vps_api_url: String,
+    vps_api_key: String,
 ) -> Result<(), String> {
     let output_path = Path::new(&output_dir);
-    
+
     let domains_vec: Vec<String> = target_domains
         .split(',')
         .map(|s| s.trim().to_string())
@@ -81,7 +93,13 @@ async fn process_file_impl(
         max_concurrent,
         use_persistent_cache,
         persistent_cache_path.as_deref().map(Path::new),
-        |payload, event_name| app.emit(event_name, payload).map_err(|error| error.to_string()),
+        smtp_enabled,
+        &vps_api_url,
+        &vps_api_key,
+        |payload, event_name| {
+            app.emit(event_name, payload)
+                .map_err(|error| error.to_string())
+        },
     )
     .await
     .map_err(|error| emit_error_and_return(&app, error))?;
