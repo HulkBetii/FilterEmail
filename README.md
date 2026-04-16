@@ -104,4 +104,6 @@ The application automatically creates neatly categorized files in your selected 
 ```
 
 ## 📝 License
-Proprietary / MIT (Please specify your license here).
+© 2026 HulkBeoti. All Rights Reserved.
+
+This application is proprietary software. Unauthorized copying, modification, or distribution of this software, via any medium, is strictly prohibited.
