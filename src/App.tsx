@@ -12,11 +12,14 @@ import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   AlertCircle,
   CheckCircle,
+  ChevronDown,
+  ChevronUp,
   Clock,
   Copy,
   FileSpreadsheet,
   FolderOpen,
   History,
+  Info,
   LoaderCircle,
   Mail,
   SearchCheck,
@@ -214,6 +217,7 @@ export default function App() {
   const [timeoutMs, setTimeoutMs] = useState(DEFAULT_TIMEOUT_MS);
   const [maxConcurrent, setMaxConcurrent] = useState(DEFAULT_MAX_CONCURRENT);
   const [usePersistentCache, setUsePersistentCache] = useState(false);
+  const [showAdvancedDns, setShowAdvancedDns] = useState(false);
   const [smtpEnabled, setSmtpEnabled] = useState(false);
   const [vpsApiUrl, setVpsApiUrl] = useState("");
   const [vpsApiKey, setVpsApiKey] = useState("");
@@ -810,55 +814,67 @@ export default function App() {
 
                     {/* ── Section A: DNS Config ── */}
                     <div className="rounded-2xl border border-slate-200 bg-slate-50/50 p-4">
-                      <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                        {language === "vi" ? "⚙️ Cấu hình DNS" : "⚙️ DNS Config"}
-                      </p>
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <div>
-                          <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                            {t.labels.timeoutLabel}
-                          </label>
-                          <input
-                            type="number"
-                            min={250}
-                            max={5000}
-                            step={50}
-                            value={timeoutMs}
-                            onChange={(event) =>
-                              setTimeoutMs(
-                                Math.max(
-                                  250,
-                                  Math.min(5000, Number(event.target.value) || DEFAULT_TIMEOUT_MS),
-                                ),
-                              )
-                            }
-                            className="mt-1.5 w-full rounded-2xl bg-white px-3 py-2.5 text-sm text-slate-900 ring-1 ring-slate-200 transition focus:outline-none focus:ring-2 focus:ring-sky-400/60"
-                          />
-                          <p className="mt-1 text-[11px] leading-relaxed text-slate-400">{t.labels.timeoutHint}</p>
-                        </div>
-                        <div>
-                          <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                            {t.labels.concurrencyLabel}
-                          </label>
-                          <input
-                            type="number"
-                            min={1}
-                            max={50}
-                            step={1}
-                            value={maxConcurrent}
-                            onChange={(event) =>
-                              setMaxConcurrent(
-                                Math.max(
-                                  1,
-                                  Math.min(50, Number(event.target.value) || DEFAULT_MAX_CONCURRENT),
-                                ),
-                              )
-                            }
-                            className="mt-1.5 w-full rounded-2xl bg-white px-3 py-2.5 text-sm text-slate-900 ring-1 ring-slate-200 transition focus:outline-none focus:ring-2 focus:ring-sky-400/60"
-                          />
-                          <p className="mt-1 text-[11px] leading-relaxed text-slate-400">{t.labels.concurrencyHint}</p>
-                        </div>
+                      <div className="mb-3 flex items-center justify-between">
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                          {language === "vi" ? "⚙️ Cấu hình DNS" : "⚙️ DNS Config"}
+                        </p>
+                        <button
+                          onClick={() => setShowAdvancedDns(!showAdvancedDns)}
+                          className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-bold text-slate-500 transition-colors hover:bg-slate-200 hover:text-slate-800"
+                        >
+                          {language === "vi" ? "Nâng cao" : "Advanced"}
+                          {showAdvancedDns ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+                        </button>
                       </div>
+
+                      {showAdvancedDns && (
+                        <div className="mb-3 grid animate-in fade-in slide-in-from-top-2 grid-cols-1 gap-3 px-1 sm:grid-cols-2">
+                          <div>
+                            <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                              {t.labels.timeoutLabel}
+                            </label>
+                            <input
+                              type="number"
+                              min={250}
+                              max={5000}
+                              step={50}
+                              value={timeoutMs}
+                              onChange={(event) =>
+                                setTimeoutMs(
+                                  Math.max(
+                                    250,
+                                    Math.min(5000, Number(event.target.value) || DEFAULT_TIMEOUT_MS),
+                                  ),
+                                )
+                              }
+                              className="mt-1.5 w-full rounded-2xl bg-white px-3 py-2.5 text-sm text-slate-900 ring-1 ring-slate-200 transition focus:outline-none focus:ring-2 focus:ring-sky-400/60"
+                            />
+                            <p className="mt-1 text-[11px] leading-relaxed text-slate-400">{t.labels.timeoutHint}</p>
+                          </div>
+                          <div>
+                            <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                              {t.labels.concurrencyLabel}
+                            </label>
+                            <input
+                              type="number"
+                              min={1}
+                              max={50}
+                              step={1}
+                              value={maxConcurrent}
+                              onChange={(event) =>
+                                setMaxConcurrent(
+                                  Math.max(
+                                    1,
+                                    Math.min(50, Number(event.target.value) || DEFAULT_MAX_CONCURRENT),
+                                  ),
+                                )
+                              }
+                              className="mt-1.5 w-full rounded-2xl bg-white px-3 py-2.5 text-sm text-slate-900 ring-1 ring-slate-200 transition focus:outline-none focus:ring-2 focus:ring-sky-400/60"
+                            />
+                            <p className="mt-1 text-[11px] leading-relaxed text-slate-400">{t.labels.concurrencyHint}</p>
+                          </div>
+                        </div>
+                      )}
 
                       {/* Persistent Cache toggle */}
                       <label
@@ -952,10 +968,7 @@ export default function App() {
                       )}
                     </div>
 
-                    {/* ── Section C: Review note ── */}
-                    <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-medium leading-relaxed text-amber-800">
-                      {t.labels.reviewNote}
-                    </div>
+
                   </div>
                 )}
               </div>
@@ -1047,6 +1060,10 @@ export default function App() {
                         </div>
                       ))}
                     </div>
+                    <div className="mt-3 flex items-center gap-1.5 rounded-xl border border-amber-200 bg-amber-100/50 px-3 py-2 text-xs font-medium text-amber-800">
+                      <Info className="h-4 w-4 shrink-0" />
+                      {t.labels.reviewNote}
+                    </div>
                   </div>
                 )}
 
@@ -1067,42 +1084,61 @@ export default function App() {
               </>
             )}
 
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-              {statCards
-                .filter((card) => {
-                  if (!verifyMode) {
-                    return ["invalid", "public", "edu", "targeted", "custom", "duplicates"].includes(card.key);
-                  }
-                  // In verify mode, secondary stats (parked/disposable/typo) now live in Review Group above
-                  return ["invalid", "public", "edu", "targeted", "custom", "duplicates"].includes(card.key);
-                })
-                .map((card) => {
-                const Icon = card.icon;
-                const value = stats[card.key];
-                const pct = totalClassified > 0 ? ((value / totalClassified) * 100).toFixed(1) : "0.0";
-                return (
-                  <article
-                    key={card.key}
-                    className="group flex flex-col gap-3 overflow-hidden rounded-2xl border border-slate-100 bg-white p-4 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md"
-                  >
-                    <div
-                      className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ring-1 transition-transform group-hover:scale-110 ${card.chip}`}
-                    >
-                      <Icon className="h-5 w-5" />
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-2xl font-extrabold leading-none tracking-tight text-slate-800">
-                        {formatLocaleNumber(value, language)}
-                      </p>
-                      <p className="mt-1 truncate text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                        {t.labels[card.key]}
-                      </p>
-                      <p className="text-[11px] font-semibold text-slate-300">{pct}%</p>
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
+            {verifyMode ? (
+              <div className="rounded-2xl border border-slate-200 bg-slate-50/50 p-4">
+                <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                  {language === "vi" ? "Tiền Xử Lý (Basic Filter)" : "Pre-processing (Basic Filter)"}
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  {statCards
+                    .filter((card) => ["invalid", "public", "edu", "targeted", "custom", "duplicates"].includes(card.key))
+                    .map((card) => {
+                      const Icon = card.icon;
+                      const value = stats[card.key];
+                      const pct = totalClassified > 0 ? ((value / totalClassified) * 100).toFixed(1) : "0.0";
+                      return (
+                        <div key={card.key} className="flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs shadow-sm transition-all hover:bg-slate-50 hover:shadow">
+                          <Icon className="h-3.5 w-3.5 text-slate-400" />
+                          <span className="font-medium text-slate-500">{t.labels[card.key]}:</span>
+                          <span className="font-bold text-slate-800">{formatLocaleNumber(value, language)}</span>
+                          <span className="text-[10px] font-semibold text-slate-400">({pct}%)</span>
+                        </div>
+                      );
+                    })}
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                {statCards
+                  .filter((card) => ["invalid", "public", "edu", "targeted", "custom", "duplicates"].includes(card.key))
+                  .map((card) => {
+                    const Icon = card.icon;
+                    const value = stats[card.key];
+                    const pct = totalClassified > 0 ? ((value / totalClassified) * 100).toFixed(1) : "0.0";
+                    return (
+                      <article
+                        key={card.key}
+                        className="group flex flex-col gap-3 overflow-hidden rounded-2xl border border-slate-100 bg-white p-4 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md"
+                      >
+                        <div
+                          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ring-1 transition-transform group-hover:scale-110 ${card.chip}`}
+                        >
+                          <Icon className="h-5 w-5" />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-2xl font-extrabold leading-none tracking-tight text-slate-800">
+                            {formatLocaleNumber(value, language)}
+                          </p>
+                          <p className="mt-1 truncate text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                            {t.labels[card.key]}
+                          </p>
+                          <p className="text-[11px] font-semibold text-slate-300">{pct}%</p>
+                        </div>
+                      </article>
+                    );
+                  })}
+              </div>
+            )}
           </div>
         </div>
 
