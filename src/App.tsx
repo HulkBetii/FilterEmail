@@ -12,6 +12,7 @@ import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   AlertCircle,
   CheckCircle,
+  Clock,
   Copy,
   FileSpreadsheet,
   FolderOpen,
@@ -22,11 +23,8 @@ import {
   ShieldCheck,
   Target,
   Trash2,
-  UploadCloud,
   CloudUpload,
   Users,
-  Wifi,
-  WifiOff,
   XCircle,
 } from "lucide-react";
 import appLogo from "./assets/logo.png";
@@ -213,14 +211,13 @@ function isVerifyStats(stats: ProcessingPayload) {
 export default function App() {
   const [language, setLanguage] = useState<Language>(getSavedLanguage);
   const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
-  const [checkMx, setCheckMx] = useState(false);
   const [timeoutMs, setTimeoutMs] = useState(DEFAULT_TIMEOUT_MS);
   const [maxConcurrent, setMaxConcurrent] = useState(DEFAULT_MAX_CONCURRENT);
   const [usePersistentCache, setUsePersistentCache] = useState(false);
   const [smtpEnabled, setSmtpEnabled] = useState(false);
   const [vpsApiUrl, setVpsApiUrl] = useState("");
   const [vpsApiKey, setVpsApiKey] = useState("");
-  const [port25Status, setPort25Status] = useState<"idle" | "checking" | "open" | "closed">("idle");
+
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [outputDir, setOutputDir] = useState("");
@@ -263,21 +260,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!verifyMode) {
-      setPort25Status("idle");
-      return;
-    }
-    setPort25Status("checking");
-    invoke<boolean>("check_port_25")
-      .then((open) => setPort25Status(open ? "open" : "closed"))
-      .catch(() => setPort25Status("closed"));
-  }, [verifyMode]);
-
-  useEffect(() => {
     const savedDomains = localStorage.getItem("targetDomains");
     if (savedDomains) setTargetDomains(savedDomains);
     const savedMx = localStorage.getItem("checkMx");
-    if (savedMx === "true") setCheckMx(true);
+    if (savedMx) { /* legacy: tab state now drives check_mx */ }
     const savedOut = localStorage.getItem("lastOutputDir");
     if (savedOut) {
       setOutputDir(savedOut);
@@ -314,10 +300,6 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("targetDomains", targetDomains);
   }, [targetDomains]);
-
-  useEffect(() => {
-    localStorage.setItem("checkMx", checkMx ? "true" : "false");
-  }, [checkMx]);
 
   useEffect(() => {
     localStorage.setItem("deepDnsTimeoutMs", String(timeoutMs));
@@ -678,6 +660,33 @@ export default function App() {
               <p className="truncate text-[11px] font-medium text-slate-400">{t.labels.heroBadge}</p>
             </div>
           </div>
+
+          {/* ── Tab navigation (centre) ── */}
+          <div className="flex space-x-1 rounded-[1.25rem] bg-slate-100 p-1">
+            <button
+              onClick={() => setActiveTab("filter")}
+              className={`flex items-center gap-1.5 rounded-xl px-5 py-2 text-sm font-semibold transition-all duration-200 ${
+                activeTab === "filter"
+                  ? "bg-white text-slate-900 shadow-sm ring-1 ring-slate-900/8"
+                  : "text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              <Mail className="h-3.5 w-3.5 shrink-0" />
+              {t.labels.tabBasicFilter}
+            </button>
+            <button
+              onClick={() => setActiveTab("verify")}
+              className={`flex items-center gap-1.5 rounded-xl px-5 py-2 text-sm font-semibold transition-all duration-200 ${
+                activeTab === "verify"
+                  ? "bg-slate-900 text-white shadow-md shadow-slate-900/20"
+                  : "text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
+              {t.labels.tabDnsVerify}
+            </button>
+          </div>
+
           <div className="flex shrink-0 items-center gap-2">
             <button
               onClick={() => setIsHistoryOpen(true)}
@@ -704,29 +713,6 @@ export default function App() {
           </div>
         </header>
 
-        <div className="flex w-full max-w-sm space-x-1 rounded-2xl bg-white p-1.5 shadow-sm ring-1 ring-slate-900/5">
-          <button
-            onClick={() => setActiveTab("filter")}
-            className={`flex-1 rounded-xl px-4 py-2.5 text-sm font-semibold transition-all duration-200 ${
-              activeTab === "filter"
-                ? "bg-slate-900 text-white shadow-md shadow-slate-900/20"
-                : "text-slate-500 hover:bg-slate-100 hover:text-slate-900"
-            }`}
-          >
-            {t.labels.tabBasicFilter}
-          </button>
-          <button
-            onClick={() => setActiveTab("verify")}
-            className={`flex-1 rounded-xl px-4 py-2.5 text-sm font-semibold transition-all duration-200 ${
-              activeTab === "verify"
-                ? "bg-slate-900 text-white shadow-md shadow-slate-900/20"
-                : "text-slate-500 hover:bg-slate-100 hover:text-slate-900"
-            }`}
-          >
-            {t.labels.tabDnsVerify}
-          </button>
-        </div>
-
         {banner.tone !== "idle" && (
           <div
             className={`flex min-w-0 items-start gap-3 rounded-2xl border p-4 text-sm font-medium ${
@@ -750,6 +736,9 @@ export default function App() {
           dragActive={dragActive}
           totalClassified={totalClassified}
           progressPercent={stats.progress_percent}
+          isProcessing={isProcessing}
+          currentDomain={stats.current_domain ?? null}
+          cacheHits={stats.cache_hits}
           labels={t.labels}
           canOpenFolder={canOpenFolder}
           onPickInputFile={pickInputFile}
@@ -803,182 +792,183 @@ export default function App() {
                     <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
                       {t.labels.targetedInputLabel}
                     </label>
-                    <input
-                      type="text"
+                    <textarea
+                      rows={3}
                       value={targetDomains}
                       onChange={(event) => setTargetDomains(event.target.value)}
                       placeholder={t.labels.targetedInputPlaceholder}
-                      className="mt-1.5 w-full rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-900 ring-1 ring-slate-100 transition placeholder-slate-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-400/60"
+                      className="mt-1.5 w-full resize-none rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-900 ring-1 ring-slate-100 transition placeholder-slate-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-400/60"
                     />
+                    <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
+                      {language === "vi" ? "Mỗi dòng một domain, hoặc phân cách bằng dấu phẩy." : "One domain per line, or separated by commas."}
+                    </p>
                   </div>
                 )}
 
                 {activeTab === "verify" && (
-                  <div className="animate-in fade-in slide-in-from-bottom-2 flex flex-col gap-3 duration-300">
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <div>
-                        <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                          {t.labels.timeoutLabel}
-                        </label>
-                        <input
-                          type="number"
-                          min={250}
-                          max={5000}
-                          step={50}
-                          value={timeoutMs}
-                          onChange={(event) =>
-                            setTimeoutMs(
-                              Math.max(
-                                250,
-                                Math.min(5000, Number(event.target.value) || DEFAULT_TIMEOUT_MS),
-                              ),
-                            )
-                          }
-                          className="mt-1.5 w-full rounded-2xl bg-slate-50 px-3 py-2.5 text-sm text-slate-900 ring-1 ring-slate-100 transition focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-400/60"
-                        />
-                        <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
-                          {t.labels.timeoutHint}
-                        </p>
+                  <div className="animate-in fade-in slide-in-from-bottom-2 flex flex-col gap-4 duration-300">
+
+                    {/* ── Section A: DNS Config ── */}
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50/50 p-4">
+                      <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                        {language === "vi" ? "⚙️ Cấu hình DNS" : "⚙️ DNS Config"}
+                      </p>
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <div>
+                          <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                            {t.labels.timeoutLabel}
+                          </label>
+                          <input
+                            type="number"
+                            min={250}
+                            max={5000}
+                            step={50}
+                            value={timeoutMs}
+                            onChange={(event) =>
+                              setTimeoutMs(
+                                Math.max(
+                                  250,
+                                  Math.min(5000, Number(event.target.value) || DEFAULT_TIMEOUT_MS),
+                                ),
+                              )
+                            }
+                            className="mt-1.5 w-full rounded-2xl bg-white px-3 py-2.5 text-sm text-slate-900 ring-1 ring-slate-200 transition focus:outline-none focus:ring-2 focus:ring-sky-400/60"
+                          />
+                          <p className="mt-1 text-[11px] leading-relaxed text-slate-400">{t.labels.timeoutHint}</p>
+                        </div>
+                        <div>
+                          <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                            {t.labels.concurrencyLabel}
+                          </label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={50}
+                            step={1}
+                            value={maxConcurrent}
+                            onChange={(event) =>
+                              setMaxConcurrent(
+                                Math.max(
+                                  1,
+                                  Math.min(50, Number(event.target.value) || DEFAULT_MAX_CONCURRENT),
+                                ),
+                              )
+                            }
+                            className="mt-1.5 w-full rounded-2xl bg-white px-3 py-2.5 text-sm text-slate-900 ring-1 ring-slate-200 transition focus:outline-none focus:ring-2 focus:ring-sky-400/60"
+                          />
+                          <p className="mt-1 text-[11px] leading-relaxed text-slate-400">{t.labels.concurrencyHint}</p>
+                        </div>
                       </div>
 
-                      <div>
-                        <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                          {t.labels.concurrencyLabel}
-                        </label>
-                        <input
-                          type="number"
-                          min={1}
-                          max={50}
-                          step={1}
-                          value={maxConcurrent}
-                          onChange={(event) =>
-                            setMaxConcurrent(
-                              Math.max(
-                                1,
-                                Math.min(50, Number(event.target.value) || DEFAULT_MAX_CONCURRENT),
-                              ),
-                            )
-                          }
-                          className="mt-1.5 w-full rounded-2xl bg-slate-50 px-3 py-2.5 text-sm text-slate-900 ring-1 ring-slate-100 transition focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-400/60"
-                        />
-                        <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
-                          {t.labels.concurrencyHint}
-                        </p>
-                      </div>
+                      {/* Persistent Cache toggle */}
+                      <label
+                        className="mt-3 flex cursor-pointer items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2.5 transition hover:bg-slate-50"
+                        onClick={() => setUsePersistentCache((v) => !v)}
+                      >
+                        <div className="min-w-0">
+                          <span className="text-sm font-semibold text-slate-700">{t.labels.persistentCacheLabel}</span>
+                          <p className="mt-0.5 text-[11px] leading-relaxed text-slate-400">{t.labels.persistentCacheHint}</p>
+                        </div>
+                        <div className="relative shrink-0">
+                          <div className={`h-5 w-9 rounded-full transition-colors ${usePersistentCache ? "bg-sky-500" : "bg-slate-300"}`} />
+                          <div className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${usePersistentCache ? "translate-x-4" : "translate-x-0"}`} />
+                        </div>
+                      </label>
+
+                      {/* Cache hit badge */}
+                      {usePersistentCache && stats.cache_hits > 0 && (
+                        <div className="mt-2 flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">
+                          <CheckCircle className="h-3.5 w-3.5 shrink-0" />
+                          {t.labels.cacheStatus(stats.cache_hits)}
+                        </div>
+                      )}
                     </div>
 
-                    <label className="flex cursor-pointer items-start justify-between gap-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-3 transition hover:bg-slate-100">
-                      <div className="min-w-0">
-                        <span className="text-sm font-semibold text-slate-700">
-                          {t.labels.persistentCacheLabel}
-                        </span>
-                        <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
-                          {t.labels.persistentCacheHint}
-                        </p>
-                      </div>
-                      <input
-                        type="checkbox"
-                        checked={usePersistentCache}
-                        onChange={(event) => setUsePersistentCache(event.target.checked)}
-                        className="mt-1 h-4 w-4 shrink-0 accent-sky-500"
-                      />
-                    </label>
-
-                    {usePersistentCache && (
-                      <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs font-medium leading-relaxed text-emerald-800">
-                        {t.labels.cacheStatus(stats.cache_hits)}
-                      </div>
-                    )}
-
-                    <label className="flex cursor-pointer items-start justify-between gap-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-3 transition hover:bg-slate-100">
-                      <div className="min-w-0">
-                        <span className="text-sm font-semibold text-slate-700">
-                          {t.labels.smtpVerifyLabel}
-                        </span>
-                        <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
-                          {t.labels.smtpVerifyHint}
-                        </p>
-                      </div>
-                      <input
-                        type="checkbox"
-                        checked={smtpEnabled}
-                        onChange={(event) => setSmtpEnabled(event.target.checked)}
-                        className="mt-1 h-4 w-4 shrink-0 accent-sky-500"
-                      />
-                    </label>
-
-                    {smtpEnabled && (
-                      <div className="grid grid-cols-1 gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 sm:grid-cols-2">
-                        <div className="sm:col-span-2">
-                          <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                            {t.labels.vpsApiUrlLabel}
-                          </label>
-                          <input
-                            type="url"
-                            value={vpsApiUrl}
-                            onChange={(event) => setVpsApiUrl(event.target.value)}
-                            placeholder={t.labels.vpsApiUrlPlaceholder}
-                            className="mt-1.5 w-full rounded-2xl bg-white px-3 py-2.5 text-sm text-slate-900 ring-1 ring-slate-100 transition placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-sky-400/60"
-                          />
+                    {/* ── Section B: SMTP Verify ── */}
+                    <div className="rounded-2xl border border-violet-200 bg-gradient-to-br from-violet-50 to-indigo-50 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <p className="text-[10px] font-bold uppercase tracking-widest text-violet-600">
+                              {language === "vi" ? "📧 Xác Minh SMTP (VPS)" : "📧 SMTP Verify (VPS)"}
+                            </p>
+                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                              smtpEnabled
+                                ? vpsApiUrl && vpsApiKey
+                                  ? "bg-emerald-100 text-emerald-700"
+                                  : "bg-amber-100 text-amber-700"
+                                : "bg-slate-200 text-slate-500"
+                            }`}>
+                              {smtpEnabled
+                                ? vpsApiUrl && vpsApiKey
+                                  ? (language === "vi" ? "Đã cấu hình" : "Configured")
+                                  : (language === "vi" ? "Cần cấu hình" : "Needs setup")
+                                : "OFF"}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-[11px] leading-relaxed text-violet-700/70">{t.labels.smtpVerifyHint}</p>
                         </div>
-                        <div className="sm:col-span-2">
-                          <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                            {t.labels.vpsApiKeyLabel}
-                          </label>
-                          <input
-                            type="password"
-                            value={vpsApiKey}
-                            onChange={(event) => setVpsApiKey(event.target.value)}
-                            placeholder={t.labels.vpsApiKeyPlaceholder}
-                            className="mt-1.5 w-full rounded-2xl bg-white px-3 py-2.5 text-sm text-slate-900 ring-1 ring-slate-100 transition placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-sky-400/60"
-                          />
-                        </div>
+                        <button
+                          onClick={() => setSmtpEnabled(!smtpEnabled)}
+                          className={`mt-1 flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+                            smtpEnabled ? "bg-violet-600" : "bg-slate-300"
+                          }`}
+                        >
+                          <span className={`mx-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                            smtpEnabled ? "translate-x-5" : "translate-x-0"
+                          }`} />
+                        </button>
                       </div>
-                    )}
 
+                      {smtpEnabled && (
+                        <div className="mt-3 flex flex-col gap-3">
+                          <div>
+                            <label className="text-[10px] font-bold uppercase tracking-widest text-violet-600">{t.labels.vpsApiUrlLabel}</label>
+                            <input
+                              type="url"
+                              value={vpsApiUrl}
+                              onChange={(event) => setVpsApiUrl(event.target.value)}
+                              placeholder={t.labels.vpsApiUrlPlaceholder}
+                              className="mt-1.5 w-full rounded-2xl bg-white px-3 py-2.5 text-sm text-slate-900 ring-1 ring-violet-200 transition placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-400/60"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] font-bold uppercase tracking-widest text-violet-600">{t.labels.vpsApiKeyLabel}</label>
+                            <input
+                              type="password"
+                              value={vpsApiKey}
+                              onChange={(event) => setVpsApiKey(event.target.value)}
+                              placeholder={t.labels.vpsApiKeyPlaceholder}
+                              className="mt-1.5 w-full rounded-2xl bg-white px-3 py-2.5 text-sm text-slate-900 ring-1 ring-violet-200 transition placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-400/60"
+                            />
+                          </div>
+                          {stats.smtp_elapsed_ms > 0 && (
+                            <div className="flex items-center gap-1.5 rounded-xl border border-violet-200 bg-white/60 px-3 py-2 text-xs font-semibold text-violet-700">
+                              <Clock className="h-3.5 w-3.5 shrink-0" />
+                              {t.labels.smtpElapsed}: {(stats.smtp_elapsed_ms / 1000).toFixed(1)}s
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* ── Section C: Review note ── */}
                     <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-medium leading-relaxed text-amber-800">
                       {t.labels.reviewNote}
                     </div>
-
-                    {port25Status !== "idle" && (
-                      <div
-                        className={`flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-semibold ring-1 ${
-                          port25Status === "checking"
-                            ? "bg-amber-50 text-amber-700 ring-amber-200"
-                            : port25Status === "open"
-                              ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
-                              : "bg-red-50 text-red-700 ring-red-200"
-                        }`}
-                      >
-                        {port25Status === "checking" ? (
-                          <>
-                            <LoaderCircle className="h-3.5 w-3.5 shrink-0 animate-spin" />
-                            <span>Port 25: {language === "vi" ? "Đang kiểm tra..." : "Checking..."}</span>
-                          </>
-                        ) : port25Status === "open" ? (
-                          <>
-                            <Wifi className="h-3.5 w-3.5 shrink-0" />
-                            <span>Port 25: {language === "vi" ? "Đã mở ✓" : "Open ✓"}</span>
-                          </>
-                        ) : (
-                          <>
-                            <WifiOff className="h-3.5 w-3.5 shrink-0" />
-                            <span>
-                              Port 25: {language === "vi" ? "Bị chặn ✗ (MX vẫn hoạt động)" : "Blocked ✗ (MX still works)"}
-                            </span>
-                          </>
-                        )}
-                      </div>
-                    )}
                   </div>
                 )}
               </div>
             </div>
 
-        <button
+            <button
               onClick={handleProcess}
               disabled={selectedFiles.length === 0 || !outputDir || isProcessing}
-              className="group flex h-14 w-full items-center justify-center gap-2.5 rounded-2xl bg-blue-600 font-bold text-white shadow-lg shadow-blue-600/30 transition hover:bg-blue-500 active:scale-[.98] disabled:pointer-events-none disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none"
+              className={`group flex h-14 w-full items-center justify-center gap-2.5 rounded-2xl font-bold text-white shadow-lg transition active:scale-[.98] disabled:pointer-events-none disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none ${
+                verifyMode
+                  ? "bg-violet-600 shadow-violet-600/30 hover:bg-violet-500"
+                  : "bg-blue-600 shadow-blue-600/30 hover:bg-blue-500"
+              }`}
             >
               {isProcessing ? (
                 <>
@@ -987,11 +977,26 @@ export default function App() {
                 </>
               ) : (
                 <>
-                  <Mail className="h-5 w-5 transition-transform group-hover:-rotate-12" />
-                  <span>{activeTab === "filter" ? (language === "vi" ? "Bắt đầu Lọc (Basic)" : "Start Filtering") : (language === "vi" ? "Bắt đầu Xác Minh (Deep)" : "Start Deep Verify")}</span>
+                  {verifyMode ? <ShieldCheck className="h-5 w-5 transition-transform group-hover:scale-110" /> : <Mail className="h-5 w-5 transition-transform group-hover:-rotate-12" />}
+                  <span>{verifyMode ? (language === "vi" ? "Bắt đầu Xác Minh DNS" : "Start DNS Verify") : (language === "vi" ? "Bắt đầu Lọc" : "Start Filtering")}</span>
                 </>
               )}
             </button>
+
+            {/* Real-time scanning indicator */}
+            {isProcessing && verifyMode && stats.current_domain && (
+              <div className="flex items-center gap-2 rounded-2xl border border-violet-200 bg-violet-50 px-4 py-2.5 text-xs font-semibold text-violet-700">
+                <LoaderCircle className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                <span className="min-w-0 truncate">
+                  {language === "vi" ? "Đang quét:" : "Scanning:"} <span className="font-bold">{stats.current_domain}</span>
+                </span>
+                  {stats.cache_hits > 0 && (
+                    <span className="ml-auto shrink-0 rounded-full bg-violet-200 px-2 py-0.5 text-violet-800">
+                      {stats.cache_hits} cached
+                    </span>
+                  )}
+              </div>
+            )}
           </div>
 
           <div className="space-y-3 lg:col-span-7">
@@ -1024,37 +1029,38 @@ export default function App() {
                   />
                 </div>
 
+                {/* Review group: parked / disposable / typo */}
+                {(stats.mx_parked > 0 || stats.mx_disposable > 0 || stats.mx_typo > 0) && (
+                  <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                    <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-amber-700">
+                      {language === "vi" ? "⚠️ Cần Kiểm Tra" : "⚠️ Review Required"}
+                    </p>
+                    <div className="grid grid-cols-3 gap-2">
+                      {[
+                        { key: "mx_parked" as const, label: t.labels.mx_parked, value: stats.mx_parked, file: "15_dns_parked.txt", color: "text-yellow-700" },
+                        { key: "mx_disposable" as const, label: t.labels.mx_disposable, value: stats.mx_disposable, file: "16_dns_disposable.txt", color: "text-orange-700" },
+                        { key: "mx_typo" as const, label: t.labels.mx_typo, value: stats.mx_typo, file: "17_dns_typo.txt", color: "text-violet-700" },
+                      ].map(({ key, label, value, color }) => (
+                        <div key={key} className="flex flex-col items-center rounded-xl border border-amber-200 bg-white px-3 py-3 text-center shadow-sm">
+                          <p className={`text-xl font-extrabold leading-none ${color}`}>{formatLocaleNumber(value, language)}</p>
+                          <p className="mt-1 text-[10px] font-bold uppercase tracking-wide text-slate-400">{label}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {stats.smtp_enabled && (
-                  <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm ring-1 ring-slate-100">
+                  <section className="rounded-3xl border border-violet-200 bg-white p-4 shadow-sm">
                     <div className="mb-3 flex flex-col gap-1">
                       <h3 className="text-sm font-bold text-slate-900">{t.labels.smtpSummaryTitle}</h3>
                       <p className="text-xs leading-relaxed text-slate-500">{t.labels.smtpSummaryBody}</p>
                     </div>
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <VerifyHeroCard
-                        bucket="smtp_deliverable"
-                        label={t.labels.smtp_deliverable}
-                        value={formatLocaleNumber(stats.smtp_deliverable, language)}
-                        fileName="20_smtp_gui_duoc__deliverable.txt"
-                      />
-                      <VerifyHeroCard
-                        bucket="smtp_rejected"
-                        label={t.labels.smtp_rejected}
-                        value={formatLocaleNumber(stats.smtp_rejected, language)}
-                        fileName="21_smtp_tu_choi__rejected.txt"
-                      />
-                      <VerifyHeroCard
-                        bucket="smtp_catchall"
-                        label={t.labels.smtp_catchall}
-                        value={formatLocaleNumber(stats.smtp_catchall, language)}
-                        fileName="22_smtp_catch_all.txt"
-                      />
-                      <VerifyHeroCard
-                        bucket="smtp_unknown"
-                        label={t.labels.smtp_unknown}
-                        value={formatLocaleNumber(stats.smtp_unknown, language)}
-                        fileName="23_smtp_chua_ro__unknown.txt"
-                      />
+                      <VerifyHeroCard bucket="smtp_deliverable" label={t.labels.smtp_deliverable} value={formatLocaleNumber(stats.smtp_deliverable, language)} fileName="20_smtp_gui_duoc__deliverable.txt" />
+                      <VerifyHeroCard bucket="smtp_rejected" label={t.labels.smtp_rejected} value={formatLocaleNumber(stats.smtp_rejected, language)} fileName="21_smtp_tu_choi__rejected.txt" />
+                      <VerifyHeroCard bucket="smtp_catchall" label={t.labels.smtp_catchall} value={formatLocaleNumber(stats.smtp_catchall, language)} fileName="22_smtp_catch_all.txt" />
+                      <VerifyHeroCard bucket="smtp_unknown" label={t.labels.smtp_unknown} value={formatLocaleNumber(stats.smtp_unknown, language)} fileName="23_smtp_chua_ro__unknown.txt" />
                     </div>
                   </section>
                 )}
@@ -1067,7 +1073,8 @@ export default function App() {
                   if (!verifyMode) {
                     return ["invalid", "public", "edu", "targeted", "custom", "duplicates"].includes(card.key);
                   }
-                  return ["mx_disposable", "mx_typo", "mx_parked"].includes(card.key);
+                  // In verify mode, secondary stats (parked/disposable/typo) now live in Review Group above
+                  return ["invalid", "public", "edu", "targeted", "custom", "duplicates"].includes(card.key);
                 })
                 .map((card) => {
                 const Icon = card.icon;

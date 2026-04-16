@@ -1,4 +1,4 @@
-import { CloudUpload, FolderOpen } from "lucide-react";
+import { CloudUpload, FolderOpen, LoaderCircle } from "lucide-react";
 
 type Labels = {
   dragBody: string;
@@ -15,6 +15,9 @@ export function TopDashboard({
   dragActive,
   totalClassified,
   progressPercent,
+  isProcessing,
+  currentDomain,
+  cacheHits,
   labels,
   canOpenFolder,
   onPickInputFile,
@@ -28,6 +31,9 @@ export function TopDashboard({
   dragActive: boolean;
   totalClassified: number;
   progressPercent: number;
+  isProcessing: boolean;
+  currentDomain: string | null;
+  cacheHits: number;
   labels: Labels;
   canOpenFolder: boolean;
   onPickInputFile: () => void;
@@ -100,6 +106,21 @@ export function TopDashboard({
                 style={{ width: `${progressPercent}%` }}
               />
             </div>
+            {/* Real-time scanning indicator inside the dark card */}
+            {isProcessing && activeTab === "verify" && currentDomain && (
+              <div className="mt-3 flex items-center gap-2 overflow-hidden rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-[11px] font-semibold text-slate-300 backdrop-blur-sm">
+                <LoaderCircle className="h-3 w-3 shrink-0 animate-spin text-sky-400" />
+                <span className="min-w-0 truncate">
+                  <span className="text-slate-400">{language === "vi" ? "Đang quét:" : "Scanning:"} </span>
+                  <span className="text-white">{currentDomain}</span>
+                </span>
+                {cacheHits > 0 && (
+                  <span className="ml-auto shrink-0 rounded-full bg-sky-500/20 px-2 py-0.5 text-sky-400">
+                    {cacheHits} cached
+                  </span>
+                )}
+              </div>
+            )}
             <button
               onClick={onOpenResultFolder}
               disabled={!canOpenFolder}
