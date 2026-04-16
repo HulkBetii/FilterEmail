@@ -1020,25 +1020,25 @@ export default function App() {
                     bucket="mx_has_mx"
                     label={t.labels.mx_has_mx}
                     value={formatLocaleNumber(stats.mx_has_mx, language)}
-                    fileName="11_dns_mx_hop_le__has_mx.txt"
+                    fileName="10_T2_DNS_Valid_Has_MX.txt"
                   />
                   <VerifyHeroCard
                     bucket="mx_a_fallback"
                     label={t.labels.mx_a_fallback}
                     value={formatLocaleNumber(stats.mx_a_fallback, language)}
-                    fileName="12_dns_fallback_a_record.txt"
+                    fileName="11_T2_DNS_Valid_ARecord.txt"
                   />
                   <VerifyHeroCard
                     bucket="mx_dead"
                     label={t.labels.mx_dead}
                     value={formatLocaleNumber(stats.mx_dead, language)}
-                    fileName="10_dns_domain_chet__dead.txt"
+                    fileName="12_T2_DNS_Error_Dead.txt"
                   />
                   <VerifyHeroCard
                     bucket="mx_inconclusive"
                     label={t.labels.mx_inconclusive}
                     value={formatLocaleNumber(stats.mx_inconclusive, language)}
-                    fileName="13_dns_can_xem_them__inconclusive.txt"
+                    fileName="16_T2_DNS_Inconclusive.txt"
                   />
                 </div>
 
@@ -1050,9 +1050,9 @@ export default function App() {
                     </p>
                     <div className="grid grid-cols-3 gap-2">
                       {[
-                        { key: "mx_parked" as const, label: t.labels.mx_parked, value: stats.mx_parked, file: "15_dns_parked.txt", color: "text-yellow-700" },
-                        { key: "mx_disposable" as const, label: t.labels.mx_disposable, value: stats.mx_disposable, file: "16_dns_disposable.txt", color: "text-orange-700" },
-                        { key: "mx_typo" as const, label: t.labels.mx_typo, value: stats.mx_typo, file: "17_dns_typo.txt", color: "text-violet-700" },
+                        { key: "mx_parked" as const, label: t.labels.mx_parked, value: stats.mx_parked, file: "13_T2_DNS_Risk_Parked.txt", color: "text-yellow-700" },
+                        { key: "mx_disposable" as const, label: t.labels.mx_disposable, value: stats.mx_disposable, file: "14_T2_DNS_Risk_Disposable.txt", color: "text-orange-700" },
+                        { key: "mx_typo" as const, label: t.labels.mx_typo, value: stats.mx_typo, file: "15_T2_DNS_Typo_Suggestion.txt", color: "text-violet-700" },
                       ].map(({ key, label, value, color }) => (
                         <div key={key} className="flex flex-col items-center rounded-xl border border-amber-200 bg-white px-3 py-3 text-center shadow-sm">
                           <p className={`text-xl font-extrabold leading-none ${color}`}>{formatLocaleNumber(value, language)}</p>
@@ -1074,10 +1074,10 @@ export default function App() {
                       <p className="text-xs leading-relaxed text-slate-500">{t.labels.smtpSummaryBody}</p>
                     </div>
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <VerifyHeroCard bucket="smtp_deliverable" label={t.labels.smtp_deliverable} value={formatLocaleNumber(stats.smtp_deliverable, language)} fileName="20_smtp_gui_duoc__deliverable.txt" />
-                      <VerifyHeroCard bucket="smtp_rejected" label={t.labels.smtp_rejected} value={formatLocaleNumber(stats.smtp_rejected, language)} fileName="21_smtp_tu_choi__rejected.txt" />
-                      <VerifyHeroCard bucket="smtp_catchall" label={t.labels.smtp_catchall} value={formatLocaleNumber(stats.smtp_catchall, language)} fileName="22_smtp_catch_all.txt" />
-                      <VerifyHeroCard bucket="smtp_unknown" label={t.labels.smtp_unknown} value={formatLocaleNumber(stats.smtp_unknown, language)} fileName="23_smtp_chua_ro__unknown.txt" />
+                      <VerifyHeroCard bucket="smtp_deliverable" label={t.labels.smtp_deliverable} value={formatLocaleNumber(stats.smtp_deliverable, language)} fileName="20_T3_SMTP_Deliverable.txt" />
+                      <VerifyHeroCard bucket="smtp_rejected" label={t.labels.smtp_rejected} value={formatLocaleNumber(stats.smtp_rejected, language)} fileName="22_T3_SMTP_Rejected.txt" />
+                      <VerifyHeroCard bucket="smtp_catchall" label={t.labels.smtp_catchall} value={formatLocaleNumber(stats.smtp_catchall, language)} fileName="21_T3_SMTP_CatchAll.txt" />
+                      <VerifyHeroCard bucket="smtp_unknown" label={t.labels.smtp_unknown} value={formatLocaleNumber(stats.smtp_unknown, language)} fileName="23_T3_SMTP_Unknown.txt" />
                     </div>
                   </section>
                 )}

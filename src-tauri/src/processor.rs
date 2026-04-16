@@ -1235,22 +1235,22 @@ fn group_for_email(
 }
 
 fn build_writers(output_path: &Path, smtp_enabled: bool) -> Result<Writers, std::io::Error> {
-    let invalid_name = "01_email_khong_hop_le__invalid.txt".to_string();
-    let public_name = "02_email_cong_cong__public.txt".to_string();
-    let edu_name = "03_email_edu_gov.txt".to_string();
-    let targeted_name = "04_email_muc_tieu__targeted.txt".to_string();
-    let custom_name = "05_email_khac__other.txt".to_string();
-    let mx_dead_name = "10_dns_domain_chet__dead.txt".to_string();
-    let mx_has_mx_name = "11_dns_mx_hop_le__has_mx.txt".to_string();
-    let mx_a_fallback_name = "12_dns_fallback_a_record.txt".to_string();
-    let mx_inconclusive_name = "13_dns_can_xem_them__inconclusive.txt".to_string();
-    let mx_parked_name = "14_dns_domain_parked.txt".to_string();
-    let mx_disposable_name = "15_dns_disposable.txt".to_string();
-    let mx_typo_name = "16_dns_goi_y_sua_loi__typo.txt".to_string();
-    let smtp_deliverable_name = "20_smtp_gui_duoc__deliverable.txt".to_string();
-    let smtp_rejected_name = "21_smtp_tu_choi__rejected.txt".to_string();
-    let smtp_catchall_name = "22_smtp_catch_all.txt".to_string();
-    let smtp_unknown_name = "23_smtp_chua_ro__unknown.txt".to_string();
+    let invalid_name = "05_T1_Invalid_Syntax.txt".to_string();
+    let public_name = "01_T1_Valid_Public.txt".to_string();
+    let edu_name = "02_T1_Valid_EduGov.txt".to_string();
+    let targeted_name = "03_T1_Valid_Targeted.txt".to_string();
+    let custom_name = "04_T1_Valid_Other.txt".to_string();
+    let mx_dead_name = "12_T2_DNS_Error_Dead.txt".to_string();
+    let mx_has_mx_name = "10_T2_DNS_Valid_Has_MX.txt".to_string();
+    let mx_a_fallback_name = "11_T2_DNS_Valid_ARecord.txt".to_string();
+    let mx_inconclusive_name = "16_T2_DNS_Inconclusive.txt".to_string();
+    let mx_parked_name = "13_T2_DNS_Risk_Parked.txt".to_string();
+    let mx_disposable_name = "14_T2_DNS_Risk_Disposable.txt".to_string();
+    let mx_typo_name = "15_T2_DNS_Typo_Suggestion.txt".to_string();
+    let smtp_deliverable_name = "20_T3_SMTP_Deliverable.txt".to_string();
+    let smtp_rejected_name = "22_T3_SMTP_Rejected.txt".to_string();
+    let smtp_catchall_name = "21_T3_SMTP_CatchAll.txt".to_string();
+    let smtp_unknown_name = "23_T3_SMTP_Unknown.txt".to_string();
 
     Ok(Writers {
         invalid: BufWriter::with_capacity(
