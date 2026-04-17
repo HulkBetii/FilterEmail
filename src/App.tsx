@@ -131,6 +131,10 @@ export default function App() {
           onOpenFolder={controller.openHistoryFolder}
           onClearHistory={controller.clearHistory}
         />
+
+        <footer className="pb-2 pt-1 text-center text-xs font-medium text-slate-400">
+          © 2026 HulkBetii. All rights reserved.
+        </footer>
       </div>
     </main>
   );
