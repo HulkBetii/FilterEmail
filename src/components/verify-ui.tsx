@@ -6,6 +6,10 @@ import {
   ShieldCheck,
   Trash2,
   XCircle,
+  Clock,
+  ServerCrash,
+  WifiOff,
+  UserX,
 } from "lucide-react";
 
 export const verifyBucketTone = {
@@ -117,6 +121,36 @@ export const verifyBucketTone = {
     value: "text-slate-900",
     item: "border-slate-200 bg-white",
   },
+  smtp_bad_mailbox: {
+    panel: "border-red-200 bg-red-50",
+    label: "text-red-700",
+    value: "text-red-900",
+    item: "border-red-100 bg-white",
+  },
+  smtp_bad_domain: {
+    panel: "border-rose-200 bg-rose-50",
+    label: "text-rose-700",
+    value: "text-rose-900",
+    item: "border-rose-100 bg-white",
+  },
+  smtp_network_error: {
+    panel: "border-neutral-200 bg-neutral-50",
+    label: "text-neutral-700",
+    value: "text-neutral-900",
+    item: "border-neutral-200 bg-white",
+  },
+  smtp_protocol_error: {
+    panel: "border-stone-200 bg-stone-50",
+    label: "text-stone-700",
+    value: "text-stone-900",
+    item: "border-stone-200 bg-white",
+  },
+  smtp_timeout: {
+    panel: "border-zinc-200 bg-zinc-50",
+    label: "text-zinc-700",
+    value: "text-zinc-900",
+    item: "border-zinc-200 bg-white",
+  },
 } as const;
 
 export type VerifyBucketKey = keyof typeof verifyBucketTone;
@@ -140,6 +174,11 @@ const verifyBucketIcon: Record<VerifyBucketKey, typeof CheckCircle> = {
   smtp_temp_failure: AlertCircle,
   smtp_mailbox_full: Trash2,
   smtp_mailbox_disabled: XCircle,
+  smtp_bad_mailbox: UserX,
+  smtp_bad_domain: XCircle,
+  smtp_network_error: WifiOff,
+  smtp_protocol_error: ServerCrash,
+  smtp_timeout: Clock,
 };
 
 export function VerifyHeroCard({
@@ -174,6 +213,11 @@ export function VerifyHeroCard({
     smtp_temp_failure: "bg-blue-600 shadow-blue-600/30",
     smtp_mailbox_full: "bg-orange-500 shadow-orange-500/30",
     smtp_mailbox_disabled: "bg-slate-600 shadow-slate-600/30",
+    smtp_bad_mailbox: "bg-red-600 shadow-red-600/30",
+    smtp_bad_domain: "bg-rose-600 shadow-rose-600/30",
+    smtp_network_error: "bg-neutral-600 shadow-neutral-600/30",
+    smtp_protocol_error: "bg-stone-600 shadow-stone-600/30",
+    smtp_timeout: "bg-zinc-600 shadow-zinc-600/30",
   } as const;
 
   return (

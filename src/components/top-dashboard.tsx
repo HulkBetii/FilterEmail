@@ -17,6 +17,7 @@ export function TopDashboard({
   progressPercent,
   isProcessing,
   currentDomain,
+  currentEmail,
   cacheHits,
   labels,
   canOpenFolder,
@@ -33,6 +34,7 @@ export function TopDashboard({
   progressPercent: number;
   isProcessing: boolean;
   currentDomain: string | null;
+  currentEmail: string | null;
   cacheHits: number;
   labels: Labels;
   canOpenFolder: boolean;
@@ -112,7 +114,7 @@ export function TopDashboard({
                 <LoaderCircle className="h-3 w-3 shrink-0 animate-spin text-sky-400" />
                 <span className="min-w-0 truncate">
                   <span className="text-slate-400">{language === "vi" ? "Đang quét:" : "Scanning:"} </span>
-                  <span className="text-white">{currentDomain}</span>
+                  <span className="text-white">{currentEmail || currentDomain}</span>
                 </span>
                 {cacheHits > 0 && (
                   <span className="ml-auto shrink-0 rounded-full bg-sky-500/20 px-2 py-0.5 text-sky-400">

@@ -294,6 +294,31 @@ export function FinalSummary({
                     value={formatNumber(stats.smtp_mailbox_disabled)}
                   />
                   <VerifySummaryCard
+                    bucket="smtp_bad_mailbox"
+                    label={labels.smtp_bad_mailbox}
+                    value={formatNumber(stats.smtp_bad_mailbox)}
+                  />
+                  <VerifySummaryCard
+                    bucket="smtp_bad_domain"
+                    label={labels.smtp_bad_domain}
+                    value={formatNumber(stats.smtp_bad_domain)}
+                  />
+                  <VerifySummaryCard
+                    bucket="smtp_network_error"
+                    label={labels.smtp_network_error}
+                    value={formatNumber(stats.smtp_network_error)}
+                  />
+                  <VerifySummaryCard
+                    bucket="smtp_protocol_error"
+                    label={labels.smtp_protocol_error}
+                    value={formatNumber(stats.smtp_protocol_error)}
+                  />
+                  <VerifySummaryCard
+                    bucket="smtp_timeout"
+                    label={labels.smtp_timeout}
+                    value={formatNumber(stats.smtp_timeout)}
+                  />
+                  <VerifySummaryCard
                     bucket="mx_inconclusive"
                     label={labels.mx_inconclusive}
                     value={formatNumber(stats.mx_inconclusive)}

@@ -36,6 +36,7 @@ import { HistoryModal } from "./components/history-modal";
 import { TopDashboard } from "./components/top-dashboard";
 import {
   VerifyHeroCard,
+  VerifySummaryCard,
   type VerifyBucketKey,
 } from "./components/verify-ui";
 import {
@@ -257,6 +258,8 @@ export default function App() {
   const [smtpEnabled, setSmtpEnabled] = useState(false);
   const [vpsApiUrl, setVpsApiUrl] = useState("");
   const [vpsApiKey, setVpsApiKey] = useState("");
+  const [showSmtpDiag, setShowSmtpDiag] = useState(false);
+  const [showDnsDiag, setShowDnsDiag] = useState(false);
 
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
@@ -782,6 +785,7 @@ export default function App() {
           progressPercent={stats.progress_percent}
           isProcessing={isProcessing}
           currentDomain={stats.current_domain ?? null}
+          currentEmail={stats.current_email ?? null}
           cacheHits={stats.cache_hits}
           labels={t.labels}
           canOpenFolder={canOpenFolder}
@@ -1036,27 +1040,15 @@ export default function App() {
               )}
             </button>
 
-            {/* Real-time scanning indicator */}
-            {isProcessing && verifyMode && (stats.current_domain || stats.current_email) && (
-              <div className="flex items-center gap-2 rounded-2xl border border-violet-200 bg-violet-50 px-4 py-2.5 text-xs font-semibold text-violet-700">
-                <LoaderCircle className="h-3.5 w-3.5 shrink-0 animate-spin" />
-                <span className="min-w-0 truncate">
-                  {language === "vi" ? "Đang quét:" : "Scanning:"}{" "}
-                  <span className="font-bold">{stats.current_domain ?? stats.current_email}</span>
-                </span>
-                  {stats.cache_hits > 0 && (
-                    <span className="ml-auto shrink-0 rounded-full bg-violet-200 px-2 py-0.5 text-violet-800">
-                      {stats.cache_hits} cached
-                    </span>
-                  )}
-              </div>
-            )}
+            {/* Duplicate scanning removed — shown in TopDashboard */}
           </div>
 
           <div className="space-y-3 lg:col-span-7">
             {verifyMode && (
               <>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                {/* Tầng 1: Final Hero Cards — only when data exists */}
+              {stats.processed_lines > 0 && (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 mb-4">
                   <VerifyHeroCard
                     bucket="final_alive"
                     label={t.labels.final_alive}
@@ -1076,113 +1068,109 @@ export default function App() {
                     fileName="32_T4_FINAL_Unknown.txt"
                   />
                 </div>
+              )}
 
-                <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm font-medium text-sky-900">
+              {/* Fix #6: smtp_alive_note only when SMTP actually enabled */}
+              {stats.smtp_enabled && stats.processed_lines > 0 && (
+                <div className="mb-4 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm font-medium text-sky-900">
                   {t.labels.smtp_alive_note}
                 </div>
+              )}
 
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  <VerifyHeroCard
-                    bucket="mx_has_mx"
-                    label={t.labels.mx_has_mx}
-                    value={formatLocaleNumber(stats.mx_has_mx, language)}
-                    fileName="10_T2_DNS_Valid_Has_MX.txt"
-                  />
-                  <VerifyHeroCard
-                    bucket="mx_a_fallback"
-                    label={t.labels.mx_a_fallback}
-                    value={formatLocaleNumber(stats.mx_a_fallback, language)}
-                    fileName="11_T2_DNS_Valid_ARecord.txt"
-                  />
-                  <VerifyHeroCard
-                    bucket="mx_dead"
-                    label={t.labels.mx_dead}
-                    value={formatLocaleNumber(stats.mx_dead, language)}
-                    fileName="12_T2_DNS_Error_Dead.txt"
-                  />
-                  <VerifyHeroCard
-                    bucket="mx_inconclusive"
-                    label={t.labels.mx_inconclusive}
-                    value={formatLocaleNumber(stats.mx_inconclusive, language)}
-                    fileName="16_T2_DNS_Inconclusive.txt"
-                  />
-                </div>
-
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                    <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                      {t.labels.smtp_attempted_emails}
-                    </p>
-                    <p className="mt-2 text-2xl font-extrabold text-slate-900">
-                      {formatLocaleNumber(stats.smtp_attempted_emails, language)}
-                    </p>
-                    <p className="mt-1 text-xs font-semibold text-slate-500">
-                      {formatLocaleNumber(stats.mx_has_mx, language)} Has MX
-                    </p>
-                  </div>
-                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                    <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                      {t.labels.smtp_coverage_percent}
-                    </p>
-                    <p className="mt-2 text-2xl font-extrabold text-slate-900">
-                      {stats.smtp_coverage_percent.toFixed(1)}%
-                    </p>
-                    <p className="mt-1 text-xs font-semibold text-slate-500">
-                      {formatLocaleNumber(stats.smtp_cache_hits, language)} {t.labels.smtp_cache_hits.toLowerCase()}
-                    </p>
-                  </div>
-                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                    <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                      {t.labels.smtp_cache_hits}
-                    </p>
-                    <p className="mt-2 text-2xl font-extrabold text-slate-900">
-                      {formatLocaleNumber(stats.smtp_cache_hits, language)}
-                    </p>
-                    <p className="mt-1 text-xs font-semibold text-slate-500">
-                      {t.labels.cacheCoverage(stats.smtp_cache_hits, stats.smtp_attempted_emails)}
-                    </p>
+              {/* Fix #4+5: React-state-driven accordion — only when data exists */}
+              {stats.smtp_enabled && stats.processed_lines > 0 && (
+                <div className="mb-4 rounded-3xl border border-violet-200 bg-white shadow-sm">
+                  <button
+                    onClick={() => setShowSmtpDiag((v) => !v)}
+                    className="flex w-full cursor-pointer items-center justify-between p-5 text-left"
+                  >
+                    <div className="flex flex-col gap-1.5">
+                      <h3 className="text-base font-extrabold text-slate-900">
+                        {language === "vi" ? "T3: Phân Tích Lỗi SMTP" : "T3: SMTP Diagnostics"}
+                      </h3>
+                      <p className="text-xs font-medium text-slate-500">
+                        {formatLocaleNumber(stats.smtp_attempted_emails, language)} attempted
+                        {" "}•{" "}{stats.smtp_coverage_percent.toFixed(1)}% coverage
+                        {" "}•{" "}{formatLocaleNumber(stats.smtp_cache_hits, language)} cached
+                      </p>
+                    </div>
+                    <div className={`flex items-center justify-center rounded-full bg-violet-100 p-2 text-violet-600 transition-transform duration-300 ${showSmtpDiag ? "rotate-180" : "rotate-0"}`}>
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+                    </div>
+                  </button>
+                  <div className={`overflow-hidden transition-all duration-300 ease-in-out ${showSmtpDiag ? "max-h-[600px] opacity-100" : "max-h-0 opacity-0"}`}>
+                    <div className="border-t border-violet-100 p-5">
+                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                        <VerifySummaryCard bucket="smtp_deliverable" label={t.labels.smtp_deliverable} value={formatLocaleNumber(stats.smtp_deliverable, language)} />
+                        <VerifySummaryCard bucket="smtp_catchall" label={t.labels.smtp_catchall} value={formatLocaleNumber(stats.smtp_catchall, language)} />
+                        <VerifySummaryCard bucket="smtp_policy_blocked" label={t.labels.smtp_policy_blocked} value={formatLocaleNumber(stats.smtp_policy_blocked, language)} />
+                        <VerifySummaryCard bucket="smtp_bad_mailbox" label={t.labels.smtp_bad_mailbox} value={formatLocaleNumber(stats.smtp_bad_mailbox, language)} />
+                        <VerifySummaryCard bucket="smtp_bad_domain" label={t.labels.smtp_bad_domain} value={formatLocaleNumber(stats.smtp_bad_domain, language)} />
+                        <VerifySummaryCard bucket="smtp_mailbox_full" label={t.labels.smtp_mailbox_full} value={formatLocaleNumber(stats.smtp_mailbox_full, language)} />
+                        <VerifySummaryCard bucket="smtp_mailbox_disabled" label={t.labels.smtp_mailbox_disabled} value={formatLocaleNumber(stats.smtp_mailbox_disabled, language)} />
+                        <VerifySummaryCard bucket="smtp_temp_failure" label={t.labels.smtp_temp_failure} value={formatLocaleNumber(stats.smtp_temp_failure, language)} />
+                        <VerifySummaryCard bucket="smtp_network_error" label={t.labels.smtp_network_error} value={formatLocaleNumber(stats.smtp_network_error, language)} />
+                        <VerifySummaryCard bucket="smtp_protocol_error" label={t.labels.smtp_protocol_error} value={formatLocaleNumber(stats.smtp_protocol_error, language)} />
+                        <VerifySummaryCard bucket="smtp_timeout" label={t.labels.smtp_timeout} value={formatLocaleNumber(stats.smtp_timeout, language)} />
+                        <VerifySummaryCard bucket="smtp_unknown" label={t.labels.smtp_unknown} value={formatLocaleNumber(stats.smtp_unknown, language)} />
+                      </div>
+                    </div>
                   </div>
                 </div>
+              )}
 
-                {/* Review group: parked / disposable / typo */}
-                {(stats.mx_parked > 0 || stats.mx_disposable > 0 || stats.mx_typo > 0) && (
-                  <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
-                    <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-amber-700">
-                      {language === "vi" ? "⚠️ Cần Kiểm Tra" : "⚠️ Review Required"}
-                    </p>
-                    <div className="grid grid-cols-3 gap-2">
-                      {[
-                        { key: "mx_parked" as const, label: t.labels.mx_parked, value: stats.mx_parked, file: "13_T2_DNS_Risk_Parked.txt", color: "text-yellow-700" },
-                        { key: "mx_disposable" as const, label: t.labels.mx_disposable, value: stats.mx_disposable, file: "14_T2_DNS_Risk_Disposable.txt", color: "text-orange-700" },
-                        { key: "mx_typo" as const, label: t.labels.mx_typo, value: stats.mx_typo, file: "15_T2_DNS_Typo_Suggestion.txt", color: "text-violet-700" },
-                      ].map(({ key, label, value, color }) => (
-                        <div key={key} className="flex flex-col items-center rounded-xl border border-amber-200 bg-white px-3 py-3 text-center shadow-sm">
-                          <p className={`text-xl font-extrabold leading-none ${color}`}>{formatLocaleNumber(value, language)}</p>
-                          <p className="mt-1 text-[10px] font-bold uppercase tracking-wide text-slate-400">{label}</p>
+              {/* Fix #4+5: React-state-driven DNS accordion — only when data exists */}
+              {stats.processed_lines > 0 && (
+                <div className="mb-4 rounded-3xl border border-slate-200 bg-white shadow-sm">
+                  <button
+                    onClick={() => setShowDnsDiag((v) => !v)}
+                    className="flex w-full cursor-pointer items-center justify-between p-5 text-left"
+                  >
+                    <div className="flex flex-col gap-1.5">
+                      <h3 className="text-base font-extrabold text-slate-900">
+                        {language === "vi" ? "T2: Báo Cáo Sức Khỏe DNS" : "T2: DNS Health"}
+                      </h3>
+                      <p className="text-xs font-medium text-slate-500">
+                        {language === "vi"
+                          ? `${formatLocaleNumber(stats.mx_has_mx, language)} domain có MX hợp lệ`
+                          : `${formatLocaleNumber(stats.mx_has_mx, language)} domains with valid MX`}
+                      </p>
+                    </div>
+                    <div className={`flex items-center justify-center rounded-full bg-slate-100 p-2 text-slate-600 transition-transform duration-300 ${showDnsDiag ? "rotate-180" : "rotate-0"}`}>
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+                    </div>
+                  </button>
+                  <div className={`overflow-hidden transition-all duration-300 ease-in-out ${showDnsDiag ? "max-h-[500px] opacity-100" : "max-h-0 opacity-0"}`}>
+                    <div className="space-y-4 border-t border-slate-100 p-5">
+                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                        <VerifySummaryCard bucket="mx_has_mx" label={t.labels.mx_has_mx} value={formatLocaleNumber(stats.mx_has_mx, language)} />
+                        <VerifySummaryCard bucket="mx_a_fallback" label={t.labels.mx_a_fallback} value={formatLocaleNumber(stats.mx_a_fallback, language)} />
+                        <VerifySummaryCard bucket="mx_dead" label={t.labels.mx_dead} value={formatLocaleNumber(stats.mx_dead, language)} />
+                        <VerifySummaryCard bucket="mx_inconclusive" label={t.labels.mx_inconclusive} value={formatLocaleNumber(stats.mx_inconclusive, language)} />
+                      </div>
+                      {(stats.mx_parked > 0 || stats.mx_disposable > 0 || stats.mx_typo > 0) && (
+                        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                          <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-amber-700">
+                            {language === "vi" ? "⚠️ Cần Kiểm Tra (Rủi Ro)" : "⚠️ Review Required"}
+                          </p>
+                          <div className="grid grid-cols-3 gap-2">
+                            {[
+                              { key: "mx_parked" as const, label: t.labels.mx_parked, value: stats.mx_parked, color: "text-amber-700" },
+                              { key: "mx_disposable" as const, label: t.labels.mx_disposable, value: stats.mx_disposable, color: "text-orange-700" },
+                              { key: "mx_typo" as const, label: t.labels.mx_typo, value: stats.mx_typo, color: "text-violet-700" },
+                            ].map(({ key, label, value, color }) => (
+                              <div key={key} className="flex flex-col items-center rounded-xl border border-amber-200 bg-white px-3 py-3 text-center shadow-sm">
+                                <p className={`text-xl font-extrabold leading-none ${color}`}>{formatLocaleNumber(value, language)}</p>
+                                <p className="mt-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">{label}</p>
+                              </div>
+                            ))}
+                          </div>
                         </div>
-                      ))}
-                    </div>
-                    <div className="mt-3 flex items-center gap-1.5 rounded-xl border border-amber-200 bg-amber-100/50 px-3 py-2 text-xs font-medium text-amber-800">
-                      <Info className="h-4 w-4 shrink-0" />
-                      {t.labels.reviewNote}
+                      )}
                     </div>
                   </div>
-                )}
-
-                {stats.smtp_enabled && (
-                  <section className="rounded-3xl border border-violet-200 bg-white p-4 shadow-sm">
-                    <div className="mb-3 flex flex-col gap-1">
-                      <h3 className="text-sm font-bold text-slate-900">{t.labels.smtpSummaryTitle}</h3>
-                      <p className="text-xs leading-relaxed text-slate-500">{t.labels.smtpSummaryBody}</p>
-                    </div>
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <VerifyHeroCard bucket="smtp_deliverable" label={t.labels.smtp_deliverable} value={formatLocaleNumber(stats.smtp_deliverable, language)} fileName="20_T3_SMTP_Deliverable.txt" />
-                      <VerifyHeroCard bucket="smtp_rejected" label={t.labels.smtp_rejected} value={formatLocaleNumber(stats.smtp_rejected, language)} fileName="22_T3_SMTP_Rejected.txt" />
-                      <VerifyHeroCard bucket="smtp_catchall" label={t.labels.smtp_catchall} value={formatLocaleNumber(stats.smtp_catchall, language)} fileName="21_T3_SMTP_CatchAll.txt" />
-                      <VerifyHeroCard bucket="smtp_unknown" label={t.labels.smtp_unknown} value={formatLocaleNumber(stats.smtp_unknown, language)} fileName="23_T3_SMTP_Unknown.txt" />
-                    </div>
-                  </section>
-                )}
+                </div>
+              )}
               </>
             )}
 
