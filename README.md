@@ -119,7 +119,7 @@ Important: `Alive` means high-confidence SMTP acceptance for that exact email ad
 
 Main backend files:
 - `src-tauri/src/main.rs`
-- `src-tauri/src/processor.rs`
+- `src-tauri/src/processor/mod.rs`
 - `src-tauri/src/smtp_status.rs`
 - `src-tauri/src/smtp_verify.rs`
 - `src-tauri/src/smtp_client.rs`
@@ -164,6 +164,10 @@ The repository is organized by responsibility:
 Detailed conventions live in:
 
 - [docs/architecture/repo-layout.md](docs/architecture/repo-layout.md)
+- [docs/architecture/compat-invariants.md](docs/architecture/compat-invariants.md)
+- [docs/architecture/module-map.md](docs/architecture/module-map.md)
+- [docs/operations/verify-evaluation.md](docs/operations/verify-evaluation.md)
+- [docs/operations/deploy-key-rotation.md](docs/operations/deploy-key-rotation.md)
 
 ## Key Features
 
