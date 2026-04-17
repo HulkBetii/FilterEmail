@@ -26,7 +26,7 @@ The application offers two main modes:
 ### 🎨 Modern Dashboard UI
 -   **Intuitive UX:** Drag-and-drop file support.
 -   **Real-time Feedback:** Live progress bars, current scanning domain, and cache hit metrics.
--   **Beautiful Data Visualization:** Tailwind CSS-powered stat cards with smooth micro-animations.
+-   **Beautiful Data Visualization:** Tailwind CSS-powered stat cards, live-updating interactive accordions, and a focused real-time single-view dashboard.
 -   **Bilingual:** Fully supports English and Vietnamese (`i18n`).
 -   **History Log:** Automatically saves past processing runs for easy retrieval.
 
@@ -123,6 +123,6 @@ python3 tools/verify_eval.py score /path/to/verify_review.csv
 ```
 
 ## 📝 License
-© 2026 HulkBeoti. All Rights Reserved.
+© 2026 HulkBetii. All Rights Reserved.
 
 This application is proprietary software. Unauthorized copying, modification, or distribution of this software, via any medium, is strictly prohibited.
