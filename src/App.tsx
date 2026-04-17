@@ -19,7 +19,6 @@ import {
   FileSpreadsheet,
   FolderOpen,
   History,
-  Info,
   LoaderCircle,
   Mail,
   SearchCheck,
@@ -1058,9 +1057,9 @@ export default function App() {
           <div className="space-y-3 lg:col-span-7">
             {verifyMode && (
               <>
-                {/* Tầng 1: Final Hero Cards — only when data exists */}
+              {/* Tầng 1: Final Hero Cards — only when data exists */}
               {stats.processed_lines > 0 && (
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 mb-4">
+                <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
                   <VerifyHeroCard
                     bucket="final_alive"
                     label={t.labels.final_alive}
@@ -1187,28 +1186,30 @@ export default function App() {
             )}
 
             {verifyMode ? (
-              <div className="rounded-2xl border border-slate-200 bg-slate-50/50 p-4">
-                <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                  {language === "vi" ? "Tiền Xử Lý (Basic Filter)" : "Pre-processing (Basic Filter)"}
-                </p>
-                <div className="flex flex-wrap items-center gap-2">
-                  {statCards
-                    .filter((card) => ["invalid", "public", "edu", "targeted", "custom", "duplicates"].includes(card.key))
-                    .map((card) => {
-                      const Icon = card.icon;
-                      const value = stats[card.key];
-                      const pct = totalClassified > 0 ? ((value / totalClassified) * 100).toFixed(1) : "0.0";
-                      return (
-                        <div key={card.key} className="flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs shadow-sm transition-all hover:bg-slate-50 hover:shadow">
-                          <Icon className="h-3.5 w-3.5 text-slate-400" />
-                          <span className="font-medium text-slate-500">{t.labels[card.key]}:</span>
-                          <span className="font-bold text-slate-800">{formatLocaleNumber(value, language)}</span>
-                          <span className="text-[10px] font-semibold text-slate-400">({pct}%)</span>
-                        </div>
-                      );
-                    })}
+              stats.processed_lines > 0 && (
+                <div className="rounded-2xl border border-slate-200 bg-slate-50/50 p-4">
+                  <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                    {language === "vi" ? "Tiền Xử Lý (Basic Filter)" : "Pre-processing (Basic Filter)"}
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {statCards
+                      .filter((card) => ["invalid", "public", "edu", "targeted", "custom", "duplicates"].includes(card.key))
+                      .map((card) => {
+                        const Icon = card.icon;
+                        const value = stats[card.key];
+                        const pct = totalClassified > 0 ? ((value / totalClassified) * 100).toFixed(1) : "0.0";
+                        return (
+                          <div key={card.key} className="flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs shadow-sm transition-all hover:bg-slate-50 hover:shadow">
+                            <Icon className="h-3.5 w-3.5 text-slate-400" />
+                            <span className="font-medium text-slate-500">{t.labels[card.key]}:</span>
+                            <span className="font-bold text-slate-800">{formatLocaleNumber(value, language)}</span>
+                            <span className="text-[10px] font-semibold text-slate-400">({pct}%)</span>
+                          </div>
+                        );
+                      })}
+                  </div>
                 </div>
-              </div>
+              )
             ) : (
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
                 {statCards
@@ -1261,7 +1262,7 @@ export default function App() {
           }}
         />
 
-        {(verifyMode ? finalTotal > 0 : totalClassified > 0) && (
+        {!isProcessing && (verifyMode ? finalTotal > 0 : totalClassified > 0) && (
           <FinalSummary
             verifyMode={verifyMode}
             labels={t.labels}

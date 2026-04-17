@@ -109,7 +109,7 @@ export function TopDashboard({
               />
             </div>
             {/* Real-time scanning indicator inside the dark card */}
-            {isProcessing && activeTab === "verify" && currentDomain && (
+            {isProcessing && activeTab === "verify" && (currentEmail || currentDomain) && (
               <div className="mt-3 flex items-center gap-2 overflow-hidden rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-[11px] font-semibold text-slate-300 backdrop-blur-sm">
                 <LoaderCircle className="h-3 w-3 shrink-0 animate-spin text-sky-400" />
                 <span className="min-w-0 truncate">
