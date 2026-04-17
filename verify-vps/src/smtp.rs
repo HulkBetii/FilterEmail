@@ -316,19 +316,14 @@ async fn smtp_rcpt_check_inner(
 
     let greeting = read_smtp_response(&mut reader).await?;
     if greeting.code != 220 {
-        return Err(protocol_error(format!(
-            "unexpected greeting {} {}",
-            greeting.code, greeting.reply_text
-        )));
+        return Ok(reply_to_probe_result(mx_host, recipient, greeting));
     }
 
     send_command(&mut writer, "EHLO verify.local\r\n").await?;
     let ehlo = read_smtp_response(&mut reader).await?;
     if ehlo.code != 250 {
-        return Err(protocol_error(format!(
-            "unexpected EHLO {} {}",
-            ehlo.code, ehlo.reply_text
-        )));
+        let _ = send_command(&mut writer, "QUIT\r\n").await;
+        return Ok(reply_to_probe_result(mx_host, recipient, ehlo));
     }
 
     send_command(&mut writer, &format!("MAIL FROM:<{}>\r\n", mail_from)).await?;
@@ -453,9 +448,20 @@ fn map_reply_to_status(reply: &SmtpReply) -> SmtpStatus {
 }
 
 fn contains_policy_text(text: &str) -> bool {
-    ["policy", "blocked", "spam", "access denied", "not authorized", "throttle", "rate limit"]
-        .iter()
-        .any(|needle| text.contains(needle))
+    [
+        "policy",
+        "blocked",
+        "block listed",
+        "blocklisted",
+        "blacklist",
+        "spam",
+        "access denied",
+        "not authorized",
+        "throttle",
+        "rate limit",
+    ]
+    .iter()
+    .any(|needle| text.contains(needle))
 }
 
 fn contains_mailbox_text(text: &str) -> bool {
@@ -543,6 +549,11 @@ mod tests {
             reply_text: "5.7.1 access denied".to_string(),
             enhanced_code: Some("5.7.1".to_string()),
         };
+        let greeting_policy = SmtpReply {
+            code: 554,
+            reply_text: "Service not available | IP address is block listed".to_string(),
+            enhanced_code: None,
+        };
         let temp = SmtpReply {
             code: 451,
             reply_text: "4.7.0 try again later".to_string(),
@@ -559,6 +570,10 @@ mod tests {
         assert_eq!(map_reply_to_status(&bad_mailbox), SmtpStatus::BadMailbox);
         assert_eq!(map_reply_to_status(&bad_mailbox_text), SmtpStatus::BadMailbox);
         assert_eq!(map_reply_to_status(&policy), SmtpStatus::PolicyBlocked);
+        assert_eq!(
+            map_reply_to_status(&greeting_policy),
+            SmtpStatus::PolicyBlocked
+        );
         assert_eq!(map_reply_to_status(&temp), SmtpStatus::TempFailure);
     }
 }
