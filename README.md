@@ -1,132 +1,305 @@
 <div align="center">
   <img src="src/assets/logo.png" alt="FilterEmail Logo" width="120" />
   <h1>FilterEmail</h1>
-  <p><strong>High-performance desktop app for filtering and validating massive email lists.</strong></p>
-  <p>Built with Tauri v2, Rust, React, and Tailwind CSS.</p>
+  <p><strong>Desktop app for filtering large email lists and running conservative DNS + SMTP verification.</strong></p>
+  <p>Built with Tauri v2, Rust, React, Tailwind CSS, and an optional Axum-based SMTP VPS service.</p>
 </div>
 
-<hr/>
+---
 
-## 🚀 Overview
+## Overview
 
-FilterEmail is a blazing-fast desktop application designed to process enormous email lists (TXT/CSV) without consuming excessive RAM. It streams files line-by-line using a powerful Rust backend and provides a modern, responsive UI built with React and Tailwind CSS.
+FilterEmail processes TXT and CSV email lists with a streaming Rust backend, so large files can be scanned without loading the whole dataset into memory.
 
-The application offers two main modes:
-1.  **Basic Filter**: Instantly classify emails into categories (Invalid, Public, Edu/Gov, Targeted, Other, Duplicates).
-2.  **DNS & SMTP Verify (Deep Scan)**: Validate domains in real-time by checking MX records, A record fallbacks, identifying parked/disposable domains, catching typos, and optionally pinging a VPS SMTP API for true deliverability checks.
+The desktop app currently has two user-facing modes:
 
-## ✨ Key Features
+1. `Basic Filter`
+   - Syntax and category filtering only.
+   - Writes T1 output files such as invalid, public, edu/gov, targeted, and other.
+2. `Verify DNS`
+   - Keeps the filter pass, then adds DNS verification.
+   - Optionally adds SMTP verification through a VPS service.
+   - Produces legacy T1/T2/T3 outputs plus final T4 `Alive / Dead / Unknown` outputs.
 
-### ⚡ Rust-Powered Core
--   **Stream Processing:** Reads and writes gigabyte-sized files chunk-by-chunk. Memory stays flat regardless of file size.
--   **High Concurrency:** Perform asynchronous DNS lookups (up to 50 concurrent requests) tailored for blazing speeds.
--   **Persistent DNS Cache:** SQLite-backed cache (TTL 6 hours) significantly dramatically speeds up repeated scans of the same domains.
--   **Tauri v2:** Ultra-lightweight desktop binary compared to traditional Electron apps.
+## Current Verification Model
 
-### 🎨 Modern Dashboard UI
--   **Intuitive UX:** Drag-and-drop file support.
--   **Real-time Feedback:** Live progress bars, current scanning domain, and cache hit metrics.
--   **Beautiful Data Visualization:** Tailwind CSS-powered stat cards, live-updating interactive accordions, and a focused real-time single-view dashboard.
--   **Bilingual:** Fully supports English and Vietnamese (`i18n`).
--   **History Log:** Automatically saves past processing runs for easy retrieval.
+The verify pipeline is intentionally conservative.
 
-### 🛡 Multi-Layer Verification
--   **Tier 1:** Syntax & Structural checks (Regex, Length limits).
--   **Tier 2:** Provider Classification (Gmail, Yahoo, Edu, Gov, Custom Targets).
--   **Tier 3:** Deep DNS Scan (`hickory-resolver`). Detects:
-    -   Valid MX Records
-    -   A-Record Fallbacks
-    -   Parked Domains (via known parking nameservers)
-    -   Disposable Emails (throw-away providers)
-    -   Common Typos (e.g., `gamil.com` -> `gmail.com`)
--   **Tier 4:** SMTP Verification (Integration ready via VPS API).
+### Layer 1: DNS
 
-## 🛠 Tech Stack
+Each email is parsed, the domain is normalized, and domains are deduplicated before DNS work.
 
--   **Frontend:** React 19, TypeScript, Tailwind CSS, Lucide React icons.
--   **Backend:** Rust, Tauri v2.
--   **Key Rust Crates:** `tokio` (async runtime), `hickory-resolver` (DNS), `rusqlite` (Cache), `reqwest` (HTTP Client).
--   **Build Tool:** Vite, Cargo.
+Normalized domain rules:
+- lowercase
+- trim whitespace
+- strip trailing `.`
+- convert IDN to punycode
 
-## 📦 Installation & Running Locally
+Current DNS statuses:
+- `HasMx`
+- `ARecordFallback`
+- `Dead`
+- `NullMx`
+- `Parked`
+- `Disposable`
+- `TypoSuggestion(...)`
+- `Inconclusive`
+
+### Layer 2: SMTP
+
+SMTP verification is optional and runs only when:
+- verify mode is enabled
+- `SMTP Verify (VPS)` is enabled
+- the DNS result is `HasMx`
+
+SMTP is now **per-email**, not sampled per domain.
+
+The desktop app calls:
+- `POST /verify/smtp/v2`
+
+through the separate `verify-vps` service and receives a per-email result with SMTP code, enhanced code, reply text, MX host, catch-all flag, cache flag, and duration.
+
+Current SMTP outcomes:
+- `Accepted`
+- `AcceptedForwarded`
+- `CatchAll`
+- `BadMailbox`
+- `BadDomain`
+- `PolicyBlocked`
+- `MailboxFull`
+- `MailboxDisabled`
+- `TempFailure`
+- `NetworkError`
+- `ProtocolError`
+- `Timeout`
+- `Inconclusive`
+
+### Final Triage
+
+The app adds a final T4 triage layer:
+
+- `Alive`
+  - syntax-valid
+  - DNS `HasMx`
+  - SMTP `Accepted` or `AcceptedForwarded`
+  - not catch-all
+- `Dead`
+  - invalid syntax
+  - DNS `Dead` or `NullMx`
+  - SMTP `BadMailbox` or `BadDomain`
+- `Unknown`
+  - everything else, including:
+  - `ARecordFallback`
+  - `Parked`
+  - `Disposable`
+  - `TypoSuggestion`
+  - `Inconclusive`
+  - `CatchAll`
+  - `PolicyBlocked`
+  - `MailboxFull`
+  - `MailboxDisabled`
+  - `TempFailure`
+  - `NetworkError`
+  - `ProtocolError`
+  - `Timeout`
+
+Important: `Alive` means high-confidence SMTP acceptance for that exact email address. It is **not** a guarantee of inbox placement.
+
+## Architecture
+
+### Desktop app
+
+- Frontend: React + TypeScript + Tailwind CSS
+- Backend: Tauri v2 + Rust
+- Key crates:
+  - `tokio`
+  - `hickory-resolver`
+  - `rusqlite`
+  - `reqwest`
+
+Main backend files:
+- `src-tauri/src/main.rs`
+- `src-tauri/src/processor.rs`
+- `src-tauri/src/smtp_status.rs`
+- `src-tauri/src/smtp_verify.rs`
+- `src-tauri/src/smtp_client.rs`
+
+### SMTP VPS service
+
+The optional SMTP service lives in:
+- `verify-vps/`
+
+It is a separate Rust service built with:
+- `axum`
+- `tokio`
+- `hickory-resolver`
+
+Main VPS files:
+- `verify-vps/src/main.rs`
+- `verify-vps/src/smtp.rs`
+- `verify-vps/src/catch_all.rs`
+- `verify-vps/src/cache.rs`
+- `verify-vps/src/rate_limiter.rs`
+
+## Key Features
+
+- Streaming file processing with flat memory usage
+- DNS dedupe by normalized domain
+- Per-email SMTP verification for `HasMx` emails
+- Persistent desktop SQLite cache
+- VPS in-memory SMTP and catch-all cache
+- Real-time progress payloads with DNS, SMTP, and final T4 counters
+- English and Vietnamese UI
+- Saved run history in the desktop app
+
+## Output Files
+
+Current output filenames are:
+
+### T1: Filter
+
+- `01_T1_Valid_Public.txt`
+- `02_T1_Valid_EduGov.txt`
+- `03_T1_Valid_Targeted.txt`
+- `04_T1_Valid_Other.txt`
+- `05_T1_Invalid_Syntax.txt`
+
+### T2: DNS
+
+- `10_T2_DNS_Valid_Has_MX.txt`
+- `11_T2_DNS_Valid_ARecord.txt`
+- `12_T2_DNS_Error_Dead.txt`
+- `13_T2_DNS_Risk_Parked.txt`
+- `14_T2_DNS_Risk_Disposable.txt`
+- `15_T2_DNS_Typo_Suggestion.txt`
+- `16_T2_DNS_Inconclusive.txt`
+
+### T3: SMTP
+
+- `20_T3_SMTP_Deliverable.txt`
+- `21_T3_SMTP_CatchAll.txt`
+- `22_T3_SMTP_Rejected.txt`
+- `23_T3_SMTP_Unknown.txt`
+
+### T4: Final
+
+- `30_T4_FINAL_Alive.txt`
+- `31_T4_FINAL_Dead.txt`
+- `32_T4_FINAL_Unknown.txt`
+- `33_T4_FINAL_Detail.csv`
+
+`33_T4_FINAL_Detail.csv` currently contains:
+- `email`
+- `final_status`
+- `dns_status`
+- `smtp_outcome`
+- `smtp_basic_code`
+- `smtp_enhanced_code`
+- `smtp_reply_text`
+- `mx_host`
+- `catch_all`
+- `smtp_cached`
+- `tested_at`
+
+## Caching
+
+When the UI toggle `Persistent DNS Cache` is enabled, the desktop app stores verification data in SQLite under the app local data directory.
+
+Current desktop cache behavior:
+- DNS cache TTL: 6 hours
+- SMTP cache TTL: 6 hours
+- catch-all cache TTL: 6 hours
+
+The UI label still says `Persistent DNS Cache`, but the same SQLite database is also used for SMTP result caching and catch-all caching.
+
+## Local Development
 
 ### Prerequisites
-Make sure you have installed:
--   [Node.js](https://nodejs.org/) (v18+)
--   [Rust](https://rustup.rs/) (1.70+)
--   Target OS dependencies for Tauri (see [Tauri Setup Guide](https://tauri.app/v1/guides/getting-started/prerequisites)).
 
-### Getting Started
+- Node.js 18+
+- Rust stable
+- Tauri v2 system dependencies for your OS
 
-1.  **Clone the repository**
-    ```bash
-    git clone https://github.com/HulkBetii/FilterEmail.git
-    cd FilterEmail
-    ```
+### Desktop app
 
-2.  **Install frontend dependencies**
-    ```bash
-    npm install
-    ```
-
-3.  **Run the development server**
-    ```bash
-    npm run tauri dev
-    ```
-    This will start the Vite frontend on port `1420` and launch the Tauri desktop window.
-
-4.  **Build for production**
-    ```bash
-    npm run tauri build
-    ```
-    The compiled binary will be located in `src-tauri/target/release/`.
-
-## ⚙️ Configuration (Verification Mode)
-
-When using the "Verify DNS" tab, you can configure several parameters:
--   **DNS Timeout:** How long to wait for a DNS response (Default: `1500ms`).
--   **Max Concurrent Lookups:** Balances speed vs. network pressure (Default: `40`).
--   **Persistent DNS Cache:** Toggle to save lookups to SQLite.
--   **SMTP Verify (VPS):** Input your VPS API endpoint and API Key. The backend sends `MX-Valid` domains to this proxy for SMTP Handshake validation.
-
-## 📁 Output Structure
-
-The application automatically creates neatly categorized files in your selected output folder. Example output:
-```text
-01_filter__hop_le.txt
-02_filter__public_mail.txt
-03_filter__edu_gov.txt
-...
-10_dns_domain_chet__dead.txt
-11_dns_mx_hop_le__has_mx.txt
-15_dns_parked.txt
-20_smtp_gui_duoc__deliverable.txt
-30_T4_FINAL_Alive.txt
-31_T4_FINAL_Dead.txt
-32_T4_FINAL_Unknown.txt
-33_T4_FINAL_Detail.csv
+```bash
+git clone https://github.com/HulkBetii/FilterEmail.git
+cd FilterEmail
+npm install
+npm run tauri dev
 ```
 
-## 📊 Verification Evaluation
+Build production desktop binaries:
 
-To score verify quality without changing backend logic, use the evaluation workflow in:
+```bash
+npm run tauri build
+```
+
+### Optional SMTP VPS service
+
+Run the SMTP service locally:
+
+```bash
+cd verify-vps
+API_KEY=your-secret-key \
+SMTP_FROM_DOMAIN=yourdomain.com \
+cargo run
+```
+
+Important environment variables:
+- `API_KEY`
+- `SMTP_FROM_DOMAIN`
+- `BIND_ADDR` default: `0.0.0.0:3000`
+- `SMTP_TIMEOUT_SECS` default: `8`
+- `MAX_CONCURRENT_SMTP` default: `30`
+- `TLS_CERT_PATH` optional
+- `TLS_KEY_PATH` optional
+
+The desktop app expects:
+- base URL of the SMTP service
+- Bearer API key
+
+## Verify Mode Settings
+
+Current verify-mode settings in the UI:
+- `DNS Timeout (ms)` default: `1500`
+- `Max Concurrent Lookups` default: `40`
+- `Persistent DNS Cache`
+- `SMTP Verify (VPS)`
+- `VPS API URL`
+- `API Key`
+
+The desktop backend also exposes a `check_port_25` command to test whether outbound TCP port 25 is reachable from the current environment.
+
+## Evaluation Workflow
+
+To measure verify quality without changing backend logic, use:
 
 - [docs/verify-evaluation.md](docs/verify-evaluation.md)
 
-It measures:
-
-- `Alive precision`
-- `Dead precision`
-- `Coverage`
-
-The helper script is:
+The helper script:
 
 ```bash
 python3 tools/verify_eval.py prepare /path/to/33_T4_FINAL_Detail.csv /path/to/verify_review.csv
 python3 tools/verify_eval.py score /path/to/verify_review.csv
 ```
 
-## 📝 License
-© 2026 HulkBetii. All Rights Reserved.
+This workflow tracks:
+- `Alive precision`
+- `Dead precision`
+- `Coverage`
 
-This application is proprietary software. Unauthorized copying, modification, or distribution of this software, via any medium, is strictly prohibited.
+## Known Limits
+
+- This tool is not inbox-placement verification.
+- It does not log into a mailbox.
+- `ARecordFallback` is not treated as `Alive`.
+- `CatchAll` is not treated as `Alive`.
+- Large freemail providers may return `PolicyBlocked` or other anti-abuse responses depending on VPS IP reputation.
+- `Unknown` is expected and intentional for ambiguous cases.
+
+## License
+
+© 2026 HulkBetii. All rights reserved.
+
+This application is proprietary software. Unauthorized copying, modification, or distribution is prohibited.
