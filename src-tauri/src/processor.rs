@@ -1,7 +1,7 @@
-use crate::smtp_client::SmtpApiClient;
-use crate::smtp_status::SmtpStatus;
-use crate::smtp_verify::{DomainVerifyResult, OutputBucket};
-use chrono::Local;
+use crate::smtp_client::{SmtpApiClient, SmtpVerifyTarget};
+use crate::smtp_status::{FinalTriage, SmtpProbeRecord, SmtpStatus};
+use crate::smtp_verify::{dns_status_name, final_triage_for, output_bucket_for, OutputBucket};
+use chrono::{Local, Utc};
 use hickory_resolver::{
     TokioAsyncResolver,
     config::{ResolverConfig, ResolverOpts},
@@ -30,9 +30,11 @@ use tokio::{
 const BUFFER_CAPACITY: usize = 1024 * 1024;
 const EMIT_EVERY: u64 = 500;
 const DOMAIN_SCAN_BATCH_SIZE: usize = 1_000;
+const SMTP_BATCH_SIZE: usize = 5;
 const FIRST_PASS_PROGRESS_END: f64 = 35.0;
 const DOMAIN_SCAN_PROGRESS_END: f64 = 65.0;
 const CACHE_TTL_SECS: i64 = 6 * 3600;
+const SMTP_CACHE_TTL_SECS: i64 = 6 * 3600;
 const PUBLIC_DOMAINS: [&str; 19] = [
     "gmail.com",
     "yahoo.com",
@@ -102,6 +104,7 @@ pub enum MxStatus {
     HasMx,
     ARecordFallback,
     Dead,
+    NullMx,
     Parked,
     Disposable,
     TypoSuggestion(String),
@@ -132,9 +135,25 @@ pub struct ProcessingPayload {
     pub smtp_enabled: bool,
     pub smtp_elapsed_ms: u64,
     pub cache_hits: u64,
+    pub final_alive: u64,
+    pub final_dead: u64,
+    pub final_unknown: u64,
+    pub smtp_attempted_emails: u64,
+    pub smtp_cache_hits: u64,
+    pub smtp_coverage_percent: f64,
+    pub smtp_policy_blocked: u64,
+    pub smtp_temp_failure: u64,
+    pub smtp_mailbox_full: u64,
+    pub smtp_mailbox_disabled: u64,
+    pub smtp_bad_mailbox: u64,
+    pub smtp_bad_domain: u64,
+    pub smtp_network_error: u64,
+    pub smtp_protocol_error: u64,
+    pub smtp_timeout: u64,
     pub elapsed_ms: u128,
     pub output_dir: Option<String>,
     pub current_domain: Option<String>,
+    pub current_email: Option<String>,
 }
 
 #[derive(Clone, Serialize, Debug)]
@@ -160,6 +179,10 @@ struct Writers {
     smtp_rejected: Option<BufWriter<File>>,
     smtp_catchall: Option<BufWriter<File>>,
     smtp_unknown: Option<BufWriter<File>>,
+    final_alive: Option<BufWriter<File>>,
+    final_dead: Option<BufWriter<File>>,
+    final_unknown: Option<BufWriter<File>>,
+    detail_csv: Option<BufWriter<File>>,
     invalid_name: String,
     public_name: String,
     edu_name: String,
@@ -176,6 +199,10 @@ struct Writers {
     smtp_rejected_name: String,
     smtp_catchall_name: String,
     smtp_unknown_name: String,
+    final_alive_name: String,
+    final_dead_name: String,
+    final_unknown_name: String,
+    detail_csv_name: String,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -198,11 +225,37 @@ struct Stats {
     smtp_catchall: u64,
     smtp_unknown: u64,
     cache_hits: u64,
+    final_alive: u64,
+    final_dead: u64,
+    final_unknown: u64,
+    smtp_attempted_emails: u64,
+    smtp_cache_hits: u64,
+    smtp_policy_blocked: u64,
+    smtp_temp_failure: u64,
+    smtp_mailbox_full: u64,
+    smtp_mailbox_disabled: u64,
+    smtp_bad_mailbox: u64,
+    smtp_bad_domain: u64,
+    smtp_network_error: u64,
+    smtp_protocol_error: u64,
+    smtp_timeout: u64,
 }
 
 struct CollectedDomains {
     unique_domains: Vec<String>,
-    sample_emails: HashMap<String, String>,
+}
+
+#[derive(Clone, Debug)]
+struct ParsedEmail {
+    normalized_email: String,
+    canonical_email_key: String,
+    raw_local_part: String,
+    normalized_domain: String,
+}
+
+struct SecondPassResult {
+    processed_lines: u64,
+    smtp_spool_path: Option<PathBuf>,
 }
 
 #[derive(Copy, Clone)]
@@ -272,7 +325,28 @@ impl PersistentCache {
                 status TEXT NOT NULL,
                 cached_at INTEGER NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS idx_mx_cache_cached_at ON mx_cache(cached_at);",
+            CREATE INDEX IF NOT EXISTS idx_mx_cache_cached_at ON mx_cache(cached_at);
+            CREATE TABLE IF NOT EXISTS smtp_cache (
+                local_part TEXT NOT NULL COLLATE BINARY,
+                domain TEXT NOT NULL,
+                outcome TEXT NOT NULL,
+                smtp_basic_code INTEGER,
+                smtp_enhanced_code TEXT,
+                smtp_reply_text TEXT,
+                mx_host TEXT,
+                catch_all INTEGER NOT NULL,
+                duration_ms INTEGER NOT NULL,
+                cached_at INTEGER NOT NULL,
+                PRIMARY KEY(local_part, domain)
+            );
+            CREATE INDEX IF NOT EXISTS idx_smtp_cache_cached_at ON smtp_cache(cached_at);
+            CREATE TABLE IF NOT EXISTS smtp_catch_all_cache (
+                domain TEXT PRIMARY KEY,
+                catch_all INTEGER NOT NULL,
+                mx_host TEXT,
+                cached_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_smtp_catch_all_cache_cached_at ON smtp_catch_all_cache(cached_at);",
         )
         .map_err(|error| {
             backend_error(
@@ -359,6 +433,167 @@ impl PersistentCache {
         })?;
         Ok(())
     }
+
+    fn load_smtp_many(
+        &self,
+        emails: &[ParsedEmail],
+    ) -> Result<HashMap<String, SmtpProbeRecord>, ErrorPayload> {
+        let conn = Connection::open(&self.path).map_err(|error| {
+            backend_error(
+                "Failed to open persistent cache database.",
+                "Không thể mở cơ sở dữ liệu persistent cache.",
+                Some(error.to_string()),
+            )
+        })?;
+        let cutoff = unix_now_secs() - SMTP_CACHE_TTL_SECS;
+        let mut results = HashMap::new();
+
+        for email in emails {
+            let catch_all = conn
+                .query_row(
+                    "SELECT catch_all, mx_host FROM smtp_catch_all_cache WHERE domain = ?1 AND cached_at > ?2",
+                    params![email.normalized_domain, cutoff],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
+                )
+                .ok();
+
+            if let Some((1, mx_host)) = catch_all {
+                results.insert(
+                    email.normalized_email.clone(),
+                    SmtpProbeRecord {
+                        email: email.normalized_email.clone(),
+                        outcome: SmtpStatus::CatchAll,
+                        mx_host,
+                        catch_all: true,
+                        cached: true,
+                        ..Default::default()
+                    },
+                );
+                continue;
+            }
+
+            let cached = conn
+                .query_row(
+                    "SELECT outcome, smtp_basic_code, smtp_enhanced_code, smtp_reply_text, mx_host, catch_all, duration_ms
+                     FROM smtp_cache
+                     WHERE local_part = ?1 AND domain = ?2 AND cached_at > ?3",
+                    params![email.raw_local_part, email.normalized_domain, cutoff],
+                    |row| {
+                        Ok(SmtpProbeRecord {
+                            email: email.normalized_email.clone(),
+                            outcome: parse_cached_smtp_status(&row.get::<_, String>(0)?)?,
+                            smtp_basic_code: row.get::<_, Option<u16>>(1)?,
+                            smtp_enhanced_code: row.get::<_, Option<String>>(2)?,
+                            smtp_reply_text: row.get::<_, Option<String>>(3)?,
+                            mx_host: row.get::<_, Option<String>>(4)?,
+                            catch_all: row.get::<_, i64>(5)? != 0,
+                            cached: true,
+                            duration_ms: row.get::<_, i64>(6)? as u64,
+                        })
+                    },
+                )
+                .ok();
+
+            if let Some(record) = cached {
+                results.insert(email.normalized_email.clone(), record);
+            }
+        }
+
+        Ok(results)
+    }
+
+    fn store_smtp_many(&self, records: &[SmtpProbeRecord]) -> Result<(), ErrorPayload> {
+        if records.is_empty() {
+            return Ok(());
+        }
+
+        let mut conn = Connection::open(&self.path).map_err(|error| {
+            backend_error(
+                "Failed to open persistent cache database.",
+                "Không thể mở cơ sở dữ liệu persistent cache.",
+                Some(error.to_string()),
+            )
+        })?;
+        let tx = conn.transaction().map_err(|error| {
+            backend_error(
+                "Failed to start persistent cache transaction.",
+                "Không thể bắt đầu transaction cho SMTP cache.",
+                Some(error.to_string()),
+            )
+        })?;
+        let now = unix_now_secs();
+
+        for record in records {
+            let Some((local_part, domain)) = record.email.rsplit_once('@') else {
+                continue;
+            };
+
+            tx.execute(
+                "INSERT INTO smtp_cache (
+                    local_part, domain, outcome, smtp_basic_code, smtp_enhanced_code, smtp_reply_text, mx_host, catch_all, duration_ms, cached_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 ON CONFLICT(local_part, domain) DO UPDATE SET
+                    outcome = excluded.outcome,
+                    smtp_basic_code = excluded.smtp_basic_code,
+                    smtp_enhanced_code = excluded.smtp_enhanced_code,
+                    smtp_reply_text = excluded.smtp_reply_text,
+                    mx_host = excluded.mx_host,
+                    catch_all = excluded.catch_all,
+                    duration_ms = excluded.duration_ms,
+                    cached_at = excluded.cached_at",
+                params![
+                    local_part,
+                    domain,
+                    cached_smtp_status_value(&record.outcome),
+                    record.smtp_basic_code,
+                    record.smtp_enhanced_code,
+                    record.smtp_reply_text,
+                    record.mx_host,
+                    if record.catch_all { 1 } else { 0 },
+                    record.duration_ms as i64,
+                    now,
+                ],
+            )
+            .map_err(|error| {
+                backend_error(
+                    "Failed to write SMTP cache entry.",
+                    "Không thể ghi mục SMTP cache.",
+                    Some(error.to_string()),
+                )
+            })?;
+
+            tx.execute(
+                "INSERT INTO smtp_catch_all_cache (domain, catch_all, mx_host, cached_at)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(domain) DO UPDATE SET
+                    catch_all = excluded.catch_all,
+                    mx_host = excluded.mx_host,
+                    cached_at = excluded.cached_at",
+                params![
+                    domain,
+                    if record.catch_all { 1 } else { 0 },
+                    record.mx_host,
+                    now
+                ],
+            )
+            .map_err(|error| {
+                backend_error(
+                    "Failed to write SMTP catch-all cache entry.",
+                    "Không thể ghi mục SMTP catch-all cache.",
+                    Some(error.to_string()),
+                )
+            })?;
+        }
+
+        tx.commit().map_err(|error| {
+            backend_error(
+                "Failed to commit SMTP cache transaction.",
+                "Không thể lưu transaction SMTP cache.",
+                Some(error.to_string()),
+            )
+        })?;
+        Ok(())
+    }
 }
 
 fn unix_now_secs() -> i64 {
@@ -373,6 +608,7 @@ fn cached_status_value(status: &MxStatus) -> String {
         MxStatus::HasMx => "has_mx".to_string(),
         MxStatus::ARecordFallback => "a_record_fallback".to_string(),
         MxStatus::Dead => "dead".to_string(),
+        MxStatus::NullMx => "null_mx".to_string(),
         MxStatus::Parked => "parked".to_string(),
         MxStatus::Disposable => "disposable".to_string(),
         MxStatus::TypoSuggestion(suggestion) => format!("typo:{suggestion}"),
@@ -385,6 +621,7 @@ fn parse_cached_status(value: &str) -> Option<MxStatus> {
         "has_mx" => Some(MxStatus::HasMx),
         "a_record_fallback" => Some(MxStatus::ARecordFallback),
         "dead" => Some(MxStatus::Dead),
+        "null_mx" => Some(MxStatus::NullMx),
         "parked" => Some(MxStatus::Parked),
         "disposable" => Some(MxStatus::Disposable),
         "inconclusive" => Some(MxStatus::Inconclusive),
@@ -394,6 +631,29 @@ fn parse_cached_status(value: &str) -> Option<MxStatus> {
     }
 }
 
+fn cached_smtp_status_value(status: &SmtpStatus) -> &'static str {
+    status.as_str()
+}
+
+fn parse_cached_smtp_status(value: &str) -> Result<SmtpStatus, rusqlite::Error> {
+    Ok(match value {
+        "Accepted" => SmtpStatus::Accepted,
+        "AcceptedForwarded" => SmtpStatus::AcceptedForwarded,
+        "CatchAll" => SmtpStatus::CatchAll,
+        "BadMailbox" => SmtpStatus::BadMailbox,
+        "BadDomain" => SmtpStatus::BadDomain,
+        "PolicyBlocked" => SmtpStatus::PolicyBlocked,
+        "MailboxFull" => SmtpStatus::MailboxFull,
+        "MailboxDisabled" => SmtpStatus::MailboxDisabled,
+        "TempFailure" => SmtpStatus::TempFailure,
+        "NetworkError" => SmtpStatus::NetworkError,
+        "ProtocolError" => SmtpStatus::ProtocolError,
+        "Timeout" => SmtpStatus::Timeout,
+        _ => SmtpStatus::Inconclusive,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 pub async fn process_file_core<F>(
     file_paths: Vec<String>,
     output_path: &Path,
@@ -455,8 +715,13 @@ where
         None
     };
     let smtp_phase_enabled = check_mx && smtp_enabled;
+    let persistent_cache = if use_persistent_cache {
+        persistent_cache_path.map(PersistentCache::new).transpose()?
+    } else {
+        None
+    };
 
-    let (cache_hits, domain_results, smtp_elapsed_ms) = if check_mx {
+    let (cache_hits, domain_statuses) = if check_mx {
         let collected_domains = collect_unique_domains(
             &file_paths,
             &extractor_regex,
@@ -467,25 +732,17 @@ where
             &mut emit_progress_event,
         )?;
 
-        let persistent_cache = if use_persistent_cache {
-            persistent_cache_path
-                .map(PersistentCache::new)
-                .transpose()?
-        } else {
-            None
-        };
-
-        let mut domain_statuses = if let Some(cache) = &persistent_cache {
+        let mut cached_domain_statuses = if let Some(cache) = &persistent_cache {
             cache.load_many(&collected_domains.unique_domains)?
         } else {
             HashMap::new()
         };
-        let cache_hits = domain_statuses.len() as u64;
+        let cache_hits = cached_domain_statuses.len() as u64;
 
         let domains_to_scan: Vec<String> = collected_domains
             .unique_domains
             .into_iter()
-            .filter(|domain| !domain_statuses.contains_key(domain))
+            .filter(|domain| !cached_domain_statuses.contains_key(domain))
             .collect();
 
         let freshly_scanned = scan_domains(
@@ -504,35 +761,26 @@ where
             cache.store_many(&freshly_scanned)?;
         }
 
-        domain_statuses.extend(freshly_scanned);
-        let smtp_started_at = Instant::now();
-        let domain_results = build_domain_verify_results(
-            domain_statuses,
-            &collected_domains.sample_emails,
-            smtp_phase_enabled,
-            smtp_client.as_ref(),
-        )
-        .await;
-        let smtp_elapsed_ms = if smtp_phase_enabled {
-            smtp_started_at.elapsed().as_millis() as u64
-        } else {
-            0
-        };
-
-        (cache_hits, domain_results, smtp_elapsed_ms)
+        cached_domain_statuses.extend(freshly_scanned);
+        (cache_hits, cached_domain_statuses)
     } else {
-        (0, HashMap::new(), 0)
+        (0, HashMap::new())
     };
 
-    let mut writers = build_writers(&run_output_path, smtp_phase_enabled).map_err(|error| {
+    let mut writers =
+        build_writers(&run_output_path, check_mx, smtp_phase_enabled).map_err(|error| {
         error_payload_from_io(
             "Failed to create one or more result files.",
             "Không thể tạo một hoặc nhiều tệp kết quả.",
             error,
         )
     })?;
+    let mut stats = Stats {
+        cache_hits,
+        ..Default::default()
+    };
 
-    let payload = process_files_with_domain_results(
+    let second_pass = process_second_pass(
         &file_paths,
         total_bytes,
         &extractor_regex,
@@ -544,19 +792,51 @@ where
         } else {
             ProcessingMode::BasicFilter
         },
-        cache_hits,
-        &domain_results,
+        &domain_statuses,
         smtp_phase_enabled,
-        smtp_elapsed_ms,
         &output_dir,
         started_at,
         &mut writers,
+        &mut stats,
         &mut emit_progress_event,
     )?;
 
+    let smtp_elapsed_ms = if smtp_phase_enabled {
+        let smtp_started_at = Instant::now();
+        if let Some(spool_path) = second_pass.smtp_spool_path.as_ref() {
+            process_smtp_spool(
+                spool_path,
+                persistent_cache.as_ref(),
+                smtp_client.as_ref(),
+                &mut writers,
+                &mut stats,
+                second_pass.processed_lines,
+                &output_dir,
+                started_at,
+                &mut emit_progress_event,
+            )
+            .await?;
+
+            let _ = fs::remove_file(spool_path);
+        }
+        smtp_started_at.elapsed().as_millis() as u64
+    } else {
+        0
+    };
+
     flush_writers(&mut writers)?;
 
-    Ok(payload)
+    Ok(build_processing_payload(
+        &output_dir,
+        second_pass.processed_lines,
+        if check_mx { 100.0 } else { scale_second_pass_progress(total_bytes, total_bytes, false, false) },
+        &stats,
+        smtp_phase_enabled,
+        smtp_elapsed_ms,
+        started_at.elapsed().as_millis(),
+        None,
+        None,
+    ))
 }
 
 fn total_bytes(file_paths: &[String]) -> u64 {
@@ -567,9 +847,9 @@ fn total_bytes(file_paths: &[String]) -> u64 {
         .sum()
 }
 
-fn extract_email_from_line(line: &str, extractor_regex: &Regex) -> Option<String> {
+fn extract_email_candidate_from_line(line: &str, extractor_regex: &Regex) -> Option<String> {
     if let Some(matched) = extractor_regex.find(line) {
-        return Some(matched.as_str().trim().to_lowercase());
+        return Some(matched.as_str().trim().to_string());
     }
 
     line.split_whitespace()
@@ -588,8 +868,27 @@ fn extract_email_from_line(line: &str, extractor_regex: &Regex) -> Option<String
                 return None;
             }
             normalize_domain(domain).ok()?;
-            Some(candidate.to_lowercase())
+            Some(candidate.to_string())
         })
+}
+
+fn parse_email_candidate(candidate: &str) -> Option<ParsedEmail> {
+    let trimmed = candidate.trim();
+    let (raw_local_part, raw_domain) = trimmed.rsplit_once('@')?;
+    if raw_local_part.is_empty() || raw_domain.is_empty() || !raw_domain.contains('.') {
+        return None;
+    }
+
+    let normalized_domain = normalize_domain(raw_domain).ok()?;
+    let normalized_email = format!("{raw_local_part}@{normalized_domain}");
+    let canonical_email_key = format!("{}@{}", raw_local_part.to_lowercase(), normalized_domain);
+
+    Some(ParsedEmail {
+        normalized_email,
+        canonical_email_key,
+        raw_local_part: raw_local_part.to_string(),
+        normalized_domain,
+    })
 }
 
 fn collect_unique_domains<F>(
@@ -607,8 +906,6 @@ where
     let mut bytes_read = 0u64;
     let mut processed_lines = 0u64;
     let mut domains = HashSet::new();
-    let mut sample_emails = HashMap::new();
-
     for file_path in file_paths {
         let path = Path::new(file_path);
         if !path.exists() {
@@ -637,18 +934,13 @@ where
             processed_lines += 1;
             bytes_read += read as u64;
 
-            if let Some(email_match) = extract_email_from_line(&line, extractor_regex) {
-                if let Some((_, domain)) = email_match.rsplit_once('@') {
-                    if let Ok(normalized_domain) = normalize_domain(domain) {
-                        domains.insert(normalized_domain.clone());
-                        sample_emails
-                            .entry(normalized_domain)
-                            .or_insert(email_match);
-                    }
-                }
+            if let Some(candidate) = extract_email_candidate_from_line(&line, extractor_regex)
+                && let Some(parsed) = parse_email_candidate(&candidate)
+            {
+                domains.insert(parsed.normalized_domain);
             }
 
-            if processed_lines % EMIT_EVERY == 0 {
+            if processed_lines.is_multiple_of(EMIT_EVERY) {
                 let payload = build_processing_payload(
                     output_dir,
                     processed_lines,
@@ -658,6 +950,7 @@ where
                     0,
                     started_at.elapsed().as_millis(),
                     None,
+                    None,
                 );
                 emit_progress_event(payload, "processing-progress").ok();
             }
@@ -666,10 +959,10 @@ where
 
     Ok(CollectedDomains {
         unique_domains: domains.into_iter().collect(),
-        sample_emails,
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn scan_domains<F>(
     unique_domains: Vec<String>,
     timeout_ms: u64,
@@ -727,7 +1020,9 @@ where
             processed_domains += 1;
             results.insert(domain.clone(), status);
 
-            if processed_domains % EMIT_EVERY as usize == 0 || processed_domains == total_domains {
+            if processed_domains.is_multiple_of(EMIT_EVERY as usize)
+                || processed_domains == total_domains
+            {
                 let domain_progress = if total_domains == 0 {
                     DOMAIN_SCAN_PROGRESS_END
                 } else {
@@ -744,6 +1039,7 @@ where
                     0,
                     started_at.elapsed().as_millis(),
                     Some(domain),
+                    None,
                 );
                 emit_progress_event(payload, "processing-progress").ok();
             }
@@ -751,59 +1047,6 @@ where
     }
 
     Ok(results)
-}
-
-async fn build_domain_verify_results(
-    domain_statuses: HashMap<String, MxStatus>,
-    sample_emails: &HashMap<String, String>,
-    smtp_enabled: bool,
-    smtp_client: Option<&SmtpApiClient>,
-) -> HashMap<String, DomainVerifyResult> {
-    if !smtp_enabled {
-        return domain_statuses
-            .into_iter()
-            .map(|(domain, dns)| (domain, DomainVerifyResult { dns, smtp: None }))
-            .collect();
-    }
-
-    let smtp_targets: Vec<(String, String)> = domain_statuses
-        .iter()
-        .filter_map(|(domain, dns)| match dns {
-            MxStatus::HasMx => Some((
-                domain.clone(),
-                sample_emails
-                    .get(domain)
-                    .cloned()
-                    .unwrap_or_else(|| format!("postmaster@{domain}")),
-            )),
-            _ => None,
-        })
-        .collect();
-
-    let smtp_statuses = match smtp_client {
-        Some(client) if !smtp_targets.is_empty() => client.verify_batch(&smtp_targets).await,
-        _ => smtp_targets
-            .iter()
-            .map(|(domain, _)| (domain.clone(), SmtpStatus::Inconclusive))
-            .collect(),
-    };
-
-    domain_statuses
-        .into_iter()
-        .map(|(domain, dns)| {
-            let smtp = if matches!(dns, MxStatus::HasMx) {
-                Some(
-                    smtp_statuses
-                        .get(&domain)
-                        .cloned()
-                        .unwrap_or(SmtpStatus::Inconclusive),
-                )
-            } else {
-                None
-            };
-            (domain, DomainVerifyResult { dns, smtp })
-        })
-        .collect()
 }
 
 async fn check_domain_mx_async(
@@ -844,10 +1087,17 @@ async fn check_domain_mx_async(
     for attempt in 0..=2u8 {
         match resolver.mx_lookup(domain.clone()).await {
             Ok(lookup) => {
-                if lookup.iter().next().is_none() {
+                let mx_records: Vec<_> = lookup.iter().collect();
+                let is_null_mx = !mx_records.is_empty()
+                    && mx_records.iter().all(|mx| {
+                        mx.preference() == 0 && mx.exchange().to_string().trim() == "."
+                    });
+                if is_null_mx {
+                    final_status = MxStatus::NullMx;
+                } else if mx_records.is_empty() {
                     final_status = check_a_record_fallback(&resolver, &domain).await;
                 } else {
-                    let all_parked = lookup
+                    let all_parked = mx_records
                         .iter()
                         .all(|mx| is_parked_mx(&mx.exchange().to_string()));
                     final_status = if is_parked_domain(&domain) || all_parked {
@@ -921,7 +1171,8 @@ fn build_resolver(timeout_ms: u64) -> TokioAsyncResolver {
     TokioAsyncResolver::tokio(ResolverConfig::default(), opts)
 }
 
-fn process_files_with_domain_results<F>(
+#[allow(clippy::too_many_arguments)]
+fn process_second_pass<F>(
     file_paths: &[String],
     total_bytes: u64,
     extractor_regex: &Regex,
@@ -929,25 +1180,41 @@ fn process_files_with_domain_results<F>(
     edu_patterns: &[Regex],
     target_domains: &HashSet<String>,
     processing_mode: ProcessingMode,
-    cache_hits: u64,
-    domain_results: &HashMap<String, DomainVerifyResult>,
+    domain_statuses: &HashMap<String, MxStatus>,
     smtp_enabled: bool,
-    smtp_elapsed_ms: u64,
     output_dir: &str,
     started_at: Instant,
     writers: &mut Writers,
+    stats: &mut Stats,
     emit_progress_event: &mut F,
-) -> Result<ProcessingPayload, ErrorPayload>
+) -> Result<SecondPassResult, ErrorPayload>
 where
     F: FnMut(ProcessingPayload, &str) -> Result<(), String>,
 {
     let mut line = String::with_capacity(1024);
     let mut bytes_read = 0u64;
     let mut processed_lines = 0u64;
-    let mut stats = Stats::default();
-    stats.cache_hits = cache_hits;
     let mut last_emitted_pct: i64 = -1;
     let mut seen_emails: HashSet<String> = HashSet::with_capacity(100_000);
+    let smtp_spool_path = if matches!(processing_mode, ProcessingMode::VerifyDns) && smtp_enabled {
+        Some(Path::new(output_dir).join(".smtp_spool.txt"))
+    } else {
+        None
+    };
+    let mut smtp_spool_writer = if let Some(path) = smtp_spool_path.as_ref() {
+        Some(BufWriter::with_capacity(
+            BUFFER_CAPACITY,
+            File::create(path).map_err(|error| {
+                error_payload_from_io(
+                    "Failed to create SMTP spool file.",
+                    "Không thể tạo tệp tạm cho SMTP spool.",
+                    error,
+                )
+            })?,
+        ))
+    } else {
+        None
+    };
 
     for file_path in file_paths {
         let path = Path::new(file_path);
@@ -976,52 +1243,45 @@ where
             bytes_read += read as u64;
             processed_lines += 1;
 
-            let extracted_email = match extract_email_from_line(&line, extractor_regex) {
-                Some(matched) => matched,
+            let parsed_email = match extract_email_candidate_from_line(&line, extractor_regex)
+                .and_then(|candidate| parse_email_candidate(&candidate))
+            {
+                Some(parsed) => parsed,
                 None => {
                     stats.invalid += 1;
                     write_line(&mut writers.invalid, line.trim(), &writers.invalid_name)?;
+                    if matches!(processing_mode, ProcessingMode::VerifyDns) {
+                        stats.final_dead += 1;
+                        write_final_result(
+                            writers,
+                            FinalTriage::Dead,
+                            line.trim(),
+                            "SyntaxInvalid",
+                            None,
+                        )?;
+                    }
+                    write_detail_row(writers, line.trim(), FinalTriage::Dead, "SyntaxInvalid", None)?;
                     continue;
                 }
             };
 
-            if !seen_emails.insert(extracted_email.clone()) {
+            if !seen_emails.insert(parsed_email.canonical_email_key.clone()) {
                 stats.duplicates += 1;
                 continue;
             }
 
-            let (_, raw_domain) = extracted_email.rsplit_once('@').unwrap_or(("", ""));
-            let normalized_domain = match normalize_domain(raw_domain) {
-                Ok(value) => value,
-                Err(_) => {
-                    stats.invalid += 1;
-                    write_line(
-                        &mut writers.invalid,
-                        &extracted_email,
-                        &writers.invalid_name,
-                    )?;
-                    continue;
-                }
-            };
-
-            let domain_result = if matches!(processing_mode, ProcessingMode::VerifyDns) {
-                domain_results
-                    .get(&normalized_domain)
+            let dns_status = if matches!(processing_mode, ProcessingMode::VerifyDns) {
+                domain_statuses
+                    .get(&parsed_email.normalized_domain)
                     .cloned()
-                    .unwrap_or(DomainVerifyResult {
-                        dns: MxStatus::Inconclusive,
-                        smtp: None,
-                    })
+                    .unwrap_or(MxStatus::Inconclusive)
             } else {
-                DomainVerifyResult {
-                    dns: MxStatus::HasMx,
-                    smtp: None,
-                }
+                MxStatus::HasMx
             };
 
             let group = group_for_email(
-                &domain_result.dns,
-                &normalized_domain,
+                &dns_status,
+                &parsed_email.normalized_domain,
                 public_domains,
                 edu_patterns,
                 target_domains,
@@ -1031,140 +1291,233 @@ where
             match group {
                 EmailGroup::Public => {
                     stats.public += 1;
-                    write_line(&mut writers.public, &extracted_email, &writers.public_name)?;
+                    write_line(
+                        &mut writers.public,
+                        &parsed_email.normalized_email,
+                        &writers.public_name,
+                    )?;
                 }
                 EmailGroup::Edu => {
                     stats.edu += 1;
-                    write_line(&mut writers.edu, &extracted_email, &writers.edu_name)?;
+                    write_line(
+                        &mut writers.edu,
+                        &parsed_email.normalized_email,
+                        &writers.edu_name,
+                    )?;
                 }
                 EmailGroup::Targeted => {
                     stats.targeted += 1;
                     write_line(
                         &mut writers.targeted,
-                        &extracted_email,
+                        &parsed_email.normalized_email,
                         &writers.targeted_name,
                     )?;
                 }
                 EmailGroup::Custom => {
                     stats.custom += 1;
-                    write_line(&mut writers.custom, &extracted_email, &writers.custom_name)?;
+                    write_line(
+                        &mut writers.custom,
+                        &parsed_email.normalized_email,
+                        &writers.custom_name,
+                    )?;
                 }
                 EmailGroup::MxDead => {
                     stats.mx_dead += 1;
+                    stats.final_dead += 1;
                     write_line(
                         &mut writers.mx_dead,
-                        &extracted_email,
+                        &parsed_email.normalized_email,
                         &writers.mx_dead_name,
+                    )?;
+                    write_final_result(
+                        writers,
+                        FinalTriage::Dead,
+                        &parsed_email.normalized_email,
+                        &dns_status_name(&dns_status),
+                        None,
+                    )?;
+                    write_detail_row(
+                        writers,
+                        &parsed_email.normalized_email,
+                        FinalTriage::Dead,
+                        &dns_status_name(&dns_status),
+                        None,
                     )?;
                 }
                 EmailGroup::MxHasMx => {
                     stats.mx_has_mx += 1;
                     write_line(
                         &mut writers.mx_has_mx,
-                        &extracted_email,
+                        &parsed_email.normalized_email,
                         &writers.mx_has_mx_name,
                     )?;
+                    if smtp_enabled {
+                        append_smtp_spool_line(
+                            smtp_spool_writer.as_mut(),
+                            &parsed_email.normalized_email,
+                        )?;
+                    } else {
+                        stats.final_unknown += 1;
+                        write_final_result(
+                            writers,
+                            FinalTriage::Unknown,
+                            &parsed_email.normalized_email,
+                            &dns_status_name(&dns_status),
+                            None,
+                        )?;
+                        write_detail_row(
+                            writers,
+                            &parsed_email.normalized_email,
+                            FinalTriage::Unknown,
+                            &dns_status_name(&dns_status),
+                            None,
+                        )?;
+                    }
                 }
                 EmailGroup::MxARecordFallback => {
                     stats.mx_a_fallback += 1;
+                    stats.final_unknown += 1;
                     write_line(
                         &mut writers.mx_a_fallback,
-                        &extracted_email,
+                        &parsed_email.normalized_email,
                         &writers.mx_a_fallback_name,
+                    )?;
+                    write_final_result(
+                        writers,
+                        FinalTriage::Unknown,
+                        &parsed_email.normalized_email,
+                        &dns_status_name(&dns_status),
+                        None,
+                    )?;
+                    write_detail_row(
+                        writers,
+                        &parsed_email.normalized_email,
+                        FinalTriage::Unknown,
+                        &dns_status_name(&dns_status),
+                        None,
                     )?;
                 }
                 EmailGroup::MxInconclusive => {
                     stats.mx_inconclusive += 1;
+                    stats.final_unknown += 1;
                     write_line(
                         &mut writers.mx_inconclusive,
-                        &extracted_email,
+                        &parsed_email.normalized_email,
                         &writers.mx_inconclusive_name,
+                    )?;
+                    write_final_result(
+                        writers,
+                        FinalTriage::Unknown,
+                        &parsed_email.normalized_email,
+                        &dns_status_name(&dns_status),
+                        None,
+                    )?;
+                    write_detail_row(
+                        writers,
+                        &parsed_email.normalized_email,
+                        FinalTriage::Unknown,
+                        &dns_status_name(&dns_status),
+                        None,
                     )?;
                 }
                 EmailGroup::MxParked => {
                     stats.mx_parked += 1;
+                    stats.final_unknown += 1;
                     write_line(
                         &mut writers.mx_parked,
-                        &extracted_email,
+                        &parsed_email.normalized_email,
                         &writers.mx_parked_name,
+                    )?;
+                    write_final_result(
+                        writers,
+                        FinalTriage::Unknown,
+                        &parsed_email.normalized_email,
+                        &dns_status_name(&dns_status),
+                        None,
+                    )?;
+                    write_detail_row(
+                        writers,
+                        &parsed_email.normalized_email,
+                        FinalTriage::Unknown,
+                        &dns_status_name(&dns_status),
+                        None,
                     )?;
                 }
                 EmailGroup::MxDisposable => {
                     stats.mx_disposable += 1;
+                    stats.final_unknown += 1;
                     write_line(
                         &mut writers.mx_disposable,
-                        &extracted_email,
+                        &parsed_email.normalized_email,
                         &writers.mx_disposable_name,
+                    )?;
+                    write_final_result(
+                        writers,
+                        FinalTriage::Unknown,
+                        &parsed_email.normalized_email,
+                        &dns_status_name(&dns_status),
+                        None,
+                    )?;
+                    write_detail_row(
+                        writers,
+                        &parsed_email.normalized_email,
+                        FinalTriage::Unknown,
+                        &dns_status_name(&dns_status),
+                        None,
                     )?;
                 }
                 EmailGroup::MxTypo => {
                     stats.mx_typo += 1;
-                    let typo_value = match &domain_result.dns {
+                    stats.final_unknown += 1;
+                    let typo_value = match &dns_status {
                         MxStatus::TypoSuggestion(suggestion) => {
-                            format!("{extracted_email} -> {suggestion}")
+                            format!("{} -> {suggestion}", parsed_email.normalized_email)
                         }
-                        _ => extracted_email.clone(),
+                        _ => parsed_email.normalized_email.clone(),
                     };
                     write_line(&mut writers.mx_typo, &typo_value, &writers.mx_typo_name)?;
+                    write_final_result(
+                        writers,
+                        FinalTriage::Unknown,
+                        &parsed_email.normalized_email,
+                        &dns_status_name(&dns_status),
+                        None,
+                    )?;
+                    write_detail_row(
+                        writers,
+                        &parsed_email.normalized_email,
+                        FinalTriage::Unknown,
+                        &dns_status_name(&dns_status),
+                        None,
+                    )?;
                 }
             }
 
-            if matches!(processing_mode, ProcessingMode::VerifyDns)
-                && smtp_enabled
-                && matches!(domain_result.dns, MxStatus::HasMx)
-            {
-                match domain_result.output_bucket() {
-                    OutputBucket::SmtpDeliverable => {
-                        stats.smtp_deliverable += 1;
-                        write_optional_line(
-                            writers.smtp_deliverable.as_mut(),
-                            &extracted_email,
-                            &writers.smtp_deliverable_name,
-                        )?;
-                    }
-                    OutputBucket::SmtpRejected => {
-                        stats.smtp_rejected += 1;
-                        write_optional_line(
-                            writers.smtp_rejected.as_mut(),
-                            &extracted_email,
-                            &writers.smtp_rejected_name,
-                        )?;
-                    }
-                    OutputBucket::SmtpCatchAll => {
-                        stats.smtp_catchall += 1;
-                        write_optional_line(
-                            writers.smtp_catchall.as_mut(),
-                            &extracted_email,
-                            &writers.smtp_catchall_name,
-                        )?;
-                    }
-                    OutputBucket::HasMxSmtpUnknown => {
-                        stats.smtp_unknown += 1;
-                        write_optional_line(
-                            writers.smtp_unknown.as_mut(),
-                            &extracted_email,
-                            &writers.smtp_unknown_name,
-                        )?;
-                    }
-                    _ => {}
-                }
-            }
-
-            if processed_lines % EMIT_EVERY == 0 {
+            if processed_lines.is_multiple_of(EMIT_EVERY) {
                 let verify_dns = matches!(processing_mode, ProcessingMode::VerifyDns);
-                let current_pct =
-                    scale_second_pass_progress(total_bytes, bytes_read, verify_dns) as i64;
+                let current_pct = scale_second_pass_progress(
+                    total_bytes,
+                    bytes_read,
+                    verify_dns,
+                    smtp_enabled,
+                ) as i64;
                 if current_pct != last_emitted_pct {
                     last_emitted_pct = current_pct;
                     let payload = build_processing_payload(
                         output_dir,
                         processed_lines,
-                        scale_second_pass_progress(total_bytes, bytes_read, verify_dns),
-                        &stats,
+                        scale_second_pass_progress(
+                            total_bytes,
+                            bytes_read,
+                            verify_dns,
+                            smtp_enabled,
+                        ),
+                        stats,
                         smtp_enabled,
-                        smtp_elapsed_ms,
+                        0,
                         started_at.elapsed().as_millis(),
-                        Some(normalized_domain.clone()),
+                        None,
+                        None,
                     );
                     emit_progress_event(payload, "processing-progress").ok();
                 }
@@ -1172,20 +1525,227 @@ where
         }
     }
 
-    Ok(build_processing_payload(
-        output_dir,
+    if let Some(spool_writer) = smtp_spool_writer.as_mut() {
+        flush_writer(
+            spool_writer,
+            "Failed to flush SMTP spool file.",
+            "Không thể lưu tệp SMTP spool.",
+        )?;
+    }
+
+    Ok(SecondPassResult {
         processed_lines,
-        if matches!(processing_mode, ProcessingMode::VerifyDns) {
-            100.0
-        } else {
-            scale_second_pass_progress(total_bytes, bytes_read, false)
-        },
-        &stats,
-        smtp_enabled,
-        smtp_elapsed_ms,
-        started_at.elapsed().as_millis(),
-        None,
-    ))
+        smtp_spool_path,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn process_smtp_spool<F>(
+    spool_path: &Path,
+    persistent_cache: Option<&PersistentCache>,
+    smtp_client: Option<&SmtpApiClient>,
+    writers: &mut Writers,
+    stats: &mut Stats,
+    processed_lines: u64,
+    output_dir: &str,
+    started_at: Instant,
+    emit_progress_event: &mut F,
+) -> Result<(), ErrorPayload>
+where
+    F: FnMut(ProcessingPayload, &str) -> Result<(), String>,
+{
+    if !spool_path.exists() {
+        return Ok(());
+    }
+
+    let total_targets = count_non_empty_lines(spool_path)?;
+    if total_targets == 0 {
+        return Ok(());
+    }
+
+    let input = File::open(spool_path).map_err(|error| {
+        error_payload_from_io(
+            "Failed to open SMTP spool file.",
+            "Không thể mở tệp SMTP spool.",
+            error,
+        )
+    })?;
+    let mut reader = BufReader::with_capacity(BUFFER_CAPACITY, input);
+    let mut line = String::with_capacity(256);
+    let mut batch = Vec::with_capacity(SMTP_BATCH_SIZE);
+    let mut processed_targets = 0usize;
+
+    loop {
+        line.clear();
+        let read = reader.read_line(&mut line).map_err(|error| {
+            error_payload_from_io(
+                "Failed to read SMTP spool file.",
+                "Không thể đọc tệp SMTP spool.",
+                error,
+            )
+        })?;
+        if read == 0 {
+            break;
+        }
+
+        let email = line.trim();
+        if !email.is_empty() {
+            batch.push(email.to_string());
+        }
+
+        if batch.len() >= SMTP_BATCH_SIZE {
+            process_smtp_batch(
+                &batch,
+                persistent_cache,
+                smtp_client,
+                writers,
+                stats,
+                &mut processed_targets,
+                total_targets,
+                processed_lines,
+                output_dir,
+                started_at,
+                emit_progress_event,
+            )
+            .await?;
+            batch.clear();
+        }
+    }
+
+    if !batch.is_empty() {
+        process_smtp_batch(
+            &batch,
+            persistent_cache,
+            smtp_client,
+            writers,
+            stats,
+            &mut processed_targets,
+            total_targets,
+            processed_lines,
+            output_dir,
+            started_at,
+            emit_progress_event,
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn process_smtp_batch<F>(
+    emails: &[String],
+    persistent_cache: Option<&PersistentCache>,
+    smtp_client: Option<&SmtpApiClient>,
+    writers: &mut Writers,
+    stats: &mut Stats,
+    processed_targets: &mut usize,
+    total_targets: usize,
+    processed_lines: u64,
+    output_dir: &str,
+    started_at: Instant,
+    emit_progress_event: &mut F,
+) -> Result<(), ErrorPayload>
+where
+    F: FnMut(ProcessingPayload, &str) -> Result<(), String>,
+{
+    let parsed_emails: Vec<ParsedEmail> = emails
+        .iter()
+        .filter_map(|email| parse_email_candidate(email))
+        .collect();
+    if parsed_emails.is_empty() {
+        return Ok(());
+    }
+
+    stats.smtp_attempted_emails += parsed_emails.len() as u64;
+
+    let cached_records = if let Some(cache) = persistent_cache {
+        cache.load_smtp_many(&parsed_emails)?
+    } else {
+        HashMap::new()
+    };
+
+    stats.smtp_cache_hits += cached_records.values().filter(|record| record.cached).count() as u64;
+
+    let live_targets: Vec<SmtpVerifyTarget> = parsed_emails
+        .iter()
+        .filter(|parsed| !cached_records.contains_key(&parsed.normalized_email))
+        .map(|parsed| SmtpVerifyTarget {
+            email: parsed.normalized_email.clone(),
+            normalized_domain: parsed.normalized_domain.clone(),
+        })
+        .collect();
+
+    let live_records = if let Some(client) = smtp_client {
+        client.verify_batch(&live_targets).await
+    } else {
+        HashMap::new()
+    };
+
+    if let Some(cache) = persistent_cache {
+        let to_store: Vec<SmtpProbeRecord> = live_records
+            .values()
+            .filter(|record| should_persist_smtp_record(record))
+            .cloned()
+            .collect();
+        cache.store_smtp_many(&to_store)?;
+    }
+
+    for parsed in parsed_emails {
+        let local_cache_hit = cached_records.contains_key(&parsed.normalized_email);
+        let mut record = cached_records
+            .get(&parsed.normalized_email)
+            .cloned()
+            .or_else(|| live_records.get(&parsed.normalized_email).cloned())
+            .unwrap_or_else(|| SmtpProbeRecord {
+                email: parsed.normalized_email.clone(),
+                outcome: SmtpStatus::Inconclusive,
+                ..Default::default()
+            });
+        record.email = parsed.normalized_email.clone();
+        if record.cached && !local_cache_hit {
+            stats.smtp_cache_hits += 1;
+        }
+
+        apply_smtp_record(stats, &record);
+        write_smtp_legacy_output(writers, &parsed.normalized_email, &record)?;
+
+        let final_triage = final_triage_for(&MxStatus::HasMx, Some(&record));
+        write_final_result(
+            writers,
+            final_triage,
+            &parsed.normalized_email,
+            &dns_status_name(&MxStatus::HasMx),
+            Some(&record),
+        )?;
+        write_detail_row(
+            writers,
+            &parsed.normalized_email,
+            final_triage,
+            &dns_status_name(&MxStatus::HasMx),
+            Some(&record),
+        )?;
+
+        *processed_targets += 1;
+        if (*processed_targets).is_multiple_of(EMIT_EVERY as usize)
+            || *processed_targets == total_targets
+        {
+            let payload = build_processing_payload(
+                output_dir,
+                processed_lines,
+                smtp_phase_progress(*processed_targets, total_targets),
+                stats,
+                true,
+                started_at.elapsed().as_millis() as u64,
+                started_at.elapsed().as_millis(),
+                None,
+                Some(parsed.normalized_email.clone()),
+            );
+            emit_progress_event(payload, "processing-progress").ok();
+        }
+    }
+
+    Ok(())
 }
 
 fn scale_progress(total_bytes: u64, bytes_read: u64, max_progress: f64) -> f64 {
@@ -1196,15 +1756,33 @@ fn scale_progress(total_bytes: u64, bytes_read: u64, max_progress: f64) -> f64 {
     }
 }
 
-fn scale_second_pass_progress(total_bytes: u64, bytes_read: u64, check_mx: bool) -> f64 {
+fn scale_second_pass_progress(
+    total_bytes: u64,
+    bytes_read: u64,
+    check_mx: bool,
+    smtp_enabled: bool,
+) -> f64 {
     if total_bytes == 0 {
-        100.0
+        if check_mx && smtp_enabled {
+            88.0
+        } else {
+            100.0
+        }
     } else if check_mx {
-        let remaining = 100.0 - DOMAIN_SCAN_PROGRESS_END;
+        let target_end = if smtp_enabled { 88.0 } else { 100.0 };
+        let remaining = target_end - DOMAIN_SCAN_PROGRESS_END;
         (DOMAIN_SCAN_PROGRESS_END + ((bytes_read as f64 / total_bytes as f64) * remaining))
-            .clamp(DOMAIN_SCAN_PROGRESS_END, 100.0)
+            .clamp(DOMAIN_SCAN_PROGRESS_END, target_end)
     } else {
         ((bytes_read as f64 / total_bytes as f64) * 100.0).clamp(0.0, 100.0)
+    }
+}
+
+fn smtp_phase_progress(processed_targets: usize, total_targets: usize) -> f64 {
+    if total_targets == 0 {
+        100.0
+    } else {
+        (88.0 + ((processed_targets as f64 / total_targets as f64) * 12.0)).clamp(88.0, 100.0)
     }
 }
 
@@ -1217,7 +1795,7 @@ fn group_for_email(
     processing_mode: ProcessingMode,
 ) -> EmailGroup {
     match mx_status {
-        MxStatus::Dead => EmailGroup::MxDead,
+        MxStatus::Dead | MxStatus::NullMx => EmailGroup::MxDead,
         MxStatus::HasMx if matches!(processing_mode, ProcessingMode::VerifyDns) => {
             EmailGroup::MxHasMx
         }
@@ -1234,7 +1812,11 @@ fn group_for_email(
     }
 }
 
-fn build_writers(output_path: &Path, smtp_enabled: bool) -> Result<Writers, std::io::Error> {
+fn build_writers(
+    output_path: &Path,
+    verify_mode: bool,
+    smtp_enabled: bool,
+) -> Result<Writers, std::io::Error> {
     let invalid_name = "05_T1_Invalid_Syntax.txt".to_string();
     let public_name = "01_T1_Valid_Public.txt".to_string();
     let edu_name = "02_T1_Valid_EduGov.txt".to_string();
@@ -1251,6 +1833,23 @@ fn build_writers(output_path: &Path, smtp_enabled: bool) -> Result<Writers, std:
     let smtp_rejected_name = "22_T3_SMTP_Rejected.txt".to_string();
     let smtp_catchall_name = "21_T3_SMTP_CatchAll.txt".to_string();
     let smtp_unknown_name = "23_T3_SMTP_Unknown.txt".to_string();
+    let final_alive_name = "30_T4_FINAL_Alive.txt".to_string();
+    let final_dead_name = "31_T4_FINAL_Dead.txt".to_string();
+    let final_unknown_name = "32_T4_FINAL_Unknown.txt".to_string();
+    let detail_csv_name = "33_T4_FINAL_Detail.csv".to_string();
+    let mut detail_csv = if verify_mode {
+        Some(BufWriter::with_capacity(
+            BUFFER_CAPACITY,
+            File::create(output_path.join(&detail_csv_name))?,
+        ))
+    } else {
+        None
+    };
+    if let Some(writer) = detail_csv.as_mut() {
+        writer.write_all(
+            b"email,final_status,dns_status,smtp_outcome,smtp_basic_code,smtp_enhanced_code,smtp_reply_text,mx_host,catch_all,smtp_cached,tested_at\n",
+        )?;
+    }
 
     Ok(Writers {
         invalid: BufWriter::with_capacity(
@@ -1330,6 +1929,31 @@ fn build_writers(output_path: &Path, smtp_enabled: bool) -> Result<Writers, std:
         } else {
             None
         },
+        final_alive: if verify_mode {
+            Some(BufWriter::with_capacity(
+                BUFFER_CAPACITY,
+                File::create(output_path.join(&final_alive_name))?,
+            ))
+        } else {
+            None
+        },
+        final_dead: if verify_mode {
+            Some(BufWriter::with_capacity(
+                BUFFER_CAPACITY,
+                File::create(output_path.join(&final_dead_name))?,
+            ))
+        } else {
+            None
+        },
+        final_unknown: if verify_mode {
+            Some(BufWriter::with_capacity(
+                BUFFER_CAPACITY,
+                File::create(output_path.join(&final_unknown_name))?,
+            ))
+        } else {
+            None
+        },
+        detail_csv,
         invalid_name,
         public_name,
         edu_name,
@@ -1346,6 +1970,10 @@ fn build_writers(output_path: &Path, smtp_enabled: bool) -> Result<Writers, std:
         smtp_rejected_name,
         smtp_catchall_name,
         smtp_unknown_name,
+        final_alive_name,
+        final_dead_name,
+        final_unknown_name,
+        detail_csv_name,
     })
 }
 
@@ -1429,6 +2057,26 @@ fn flush_writers(writers: &mut Writers) -> Result<(), ErrorPayload> {
         writers.smtp_unknown.as_mut(),
         "Failed to flush SMTP unknown results to disk.",
         "Không thể ghi tệp SMTP unknown.",
+    )?;
+    flush_optional_writer(
+        writers.final_alive.as_mut(),
+        "Failed to flush final alive results to disk.",
+        "Không thể ghi tệp kết quả Alive.",
+    )?;
+    flush_optional_writer(
+        writers.final_dead.as_mut(),
+        "Failed to flush final dead results to disk.",
+        "Không thể ghi tệp kết quả Dead.",
+    )?;
+    flush_optional_writer(
+        writers.final_unknown.as_mut(),
+        "Failed to flush final unknown results to disk.",
+        "Không thể ghi tệp kết quả Unknown.",
+    )?;
+    flush_optional_writer(
+        writers.detail_csv.as_mut(),
+        "Failed to flush detail CSV results to disk.",
+        "Không thể ghi tệp CSV chi tiết.",
     )
 }
 
@@ -1495,6 +2143,7 @@ fn classify_email(
     EmailGroup::Custom
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_processing_payload(
     output_dir: &str,
     processed_lines: u64,
@@ -1504,7 +2153,14 @@ fn build_processing_payload(
     smtp_elapsed_ms: u64,
     elapsed_ms: u128,
     current_domain: Option<String>,
+    current_email: Option<String>,
 ) -> ProcessingPayload {
+    let smtp_coverage_percent = if stats.mx_has_mx == 0 {
+        0.0
+    } else {
+        ((stats.smtp_attempted_emails as f64 / stats.mx_has_mx as f64) * 100.0).clamp(0.0, 100.0)
+    };
+
     ProcessingPayload {
         processed_lines,
         progress_percent: progress_percent.clamp(0.0, 100.0),
@@ -1528,10 +2184,243 @@ fn build_processing_payload(
         smtp_enabled,
         smtp_elapsed_ms,
         cache_hits: stats.cache_hits,
+        final_alive: stats.final_alive,
+        final_dead: stats.final_dead,
+        final_unknown: stats.final_unknown,
+        smtp_attempted_emails: stats.smtp_attempted_emails,
+        smtp_cache_hits: stats.smtp_cache_hits,
+        smtp_coverage_percent,
+        smtp_policy_blocked: stats.smtp_policy_blocked,
+        smtp_temp_failure: stats.smtp_temp_failure,
+        smtp_mailbox_full: stats.smtp_mailbox_full,
+        smtp_mailbox_disabled: stats.smtp_mailbox_disabled,
+        smtp_bad_mailbox: stats.smtp_bad_mailbox,
+        smtp_bad_domain: stats.smtp_bad_domain,
+        smtp_network_error: stats.smtp_network_error,
+        smtp_protocol_error: stats.smtp_protocol_error,
+        smtp_timeout: stats.smtp_timeout,
         elapsed_ms,
         output_dir: Some(output_dir.to_string()),
         current_domain,
+        current_email,
     }
+}
+
+fn append_smtp_spool_line(
+    writer: Option<&mut BufWriter<File>>,
+    email: &str,
+) -> Result<(), ErrorPayload> {
+    if let Some(writer) = writer {
+        write_line(writer, email, ".smtp_spool.txt")?;
+    }
+    Ok(())
+}
+
+fn count_non_empty_lines(path: &Path) -> Result<usize, ErrorPayload> {
+    let input = File::open(path).map_err(|error| {
+        error_payload_from_io(
+            "Failed to count SMTP spool lines.",
+            "Không thể đếm số dòng trong SMTP spool.",
+            error,
+        )
+    })?;
+    let reader = BufReader::with_capacity(BUFFER_CAPACITY, input);
+    let mut count = 0usize;
+    for line in reader.lines() {
+        let line = line.map_err(|error| {
+            error_payload_from_io(
+                "Failed to read SMTP spool lines.",
+                "Không thể đọc các dòng trong SMTP spool.",
+                error,
+            )
+        })?;
+        if !line.trim().is_empty() {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+fn apply_smtp_record(stats: &mut Stats, record: &SmtpProbeRecord) {
+    match record.outcome {
+        SmtpStatus::Accepted | SmtpStatus::AcceptedForwarded => {
+            stats.smtp_deliverable += 1;
+            stats.final_alive += 1;
+        }
+        SmtpStatus::CatchAll => {
+            stats.smtp_catchall += 1;
+            stats.final_unknown += 1;
+        }
+        SmtpStatus::BadMailbox => {
+            stats.smtp_rejected += 1;
+            stats.smtp_bad_mailbox += 1;
+            stats.final_dead += 1;
+        }
+        SmtpStatus::BadDomain => {
+            stats.smtp_rejected += 1;
+            stats.smtp_bad_domain += 1;
+            stats.final_dead += 1;
+        }
+        SmtpStatus::PolicyBlocked => {
+            stats.smtp_unknown += 1;
+            stats.smtp_policy_blocked += 1;
+            stats.final_unknown += 1;
+        }
+        SmtpStatus::MailboxFull => {
+            stats.smtp_unknown += 1;
+            stats.smtp_mailbox_full += 1;
+            stats.final_unknown += 1;
+        }
+        SmtpStatus::MailboxDisabled => {
+            stats.smtp_unknown += 1;
+            stats.smtp_mailbox_disabled += 1;
+            stats.final_unknown += 1;
+        }
+        SmtpStatus::TempFailure => {
+            stats.smtp_unknown += 1;
+            stats.smtp_temp_failure += 1;
+            stats.final_unknown += 1;
+        }
+        SmtpStatus::NetworkError => {
+            stats.smtp_unknown += 1;
+            stats.smtp_network_error += 1;
+            stats.final_unknown += 1;
+        }
+        SmtpStatus::ProtocolError => {
+            stats.smtp_unknown += 1;
+            stats.smtp_protocol_error += 1;
+            stats.final_unknown += 1;
+        }
+        SmtpStatus::Timeout => {
+            stats.smtp_unknown += 1;
+            stats.smtp_timeout += 1;
+            stats.final_unknown += 1;
+        }
+        SmtpStatus::Inconclusive => {
+            stats.smtp_unknown += 1;
+            stats.final_unknown += 1;
+        }
+    }
+}
+
+fn should_persist_smtp_record(record: &SmtpProbeRecord) -> bool {
+    if record.outcome != SmtpStatus::Inconclusive {
+        return true;
+    }
+
+    record.smtp_basic_code.is_some()
+        || record.smtp_enhanced_code.is_some()
+        || record.smtp_reply_text.is_some()
+        || record.mx_host.is_some()
+        || record.catch_all
+        || record.duration_ms > 0
+}
+
+fn write_smtp_legacy_output(
+    writers: &mut Writers,
+    email: &str,
+    record: &SmtpProbeRecord,
+) -> Result<(), ErrorPayload> {
+    match output_bucket_for(&MxStatus::HasMx, Some(record)) {
+        OutputBucket::SmtpDeliverable => write_optional_line(
+            writers.smtp_deliverable.as_mut(),
+            email,
+            &writers.smtp_deliverable_name,
+        )?,
+        OutputBucket::SmtpRejected => write_optional_line(
+            writers.smtp_rejected.as_mut(),
+            email,
+            &writers.smtp_rejected_name,
+        )?,
+        OutputBucket::SmtpCatchAll => write_optional_line(
+            writers.smtp_catchall.as_mut(),
+            email,
+            &writers.smtp_catchall_name,
+        )?,
+        OutputBucket::HasMxSmtpUnknown => write_optional_line(
+            writers.smtp_unknown.as_mut(),
+            email,
+            &writers.smtp_unknown_name,
+        )?,
+        _ => {}
+    }
+    Ok(())
+}
+
+fn write_final_result(
+    writers: &mut Writers,
+    triage: FinalTriage,
+    email: &str,
+    _dns_status: &str,
+    _record: Option<&SmtpProbeRecord>,
+) -> Result<(), ErrorPayload> {
+    match triage {
+        FinalTriage::Alive => write_optional_line(
+            writers.final_alive.as_mut(),
+            email,
+            &writers.final_alive_name,
+        )?,
+        FinalTriage::Dead => write_optional_line(
+            writers.final_dead.as_mut(),
+            email,
+            &writers.final_dead_name,
+        )?,
+        FinalTriage::Unknown => write_optional_line(
+            writers.final_unknown.as_mut(),
+            email,
+            &writers.final_unknown_name,
+        )?,
+    }
+    Ok(())
+}
+
+fn write_detail_row(
+    writers: &mut Writers,
+    email: &str,
+    triage: FinalTriage,
+    dns_status: &str,
+    record: Option<&SmtpProbeRecord>,
+) -> Result<(), ErrorPayload> {
+    let Some(writer) = writers.detail_csv.as_mut() else {
+        return Ok(());
+    };
+    let row = [
+        csv_escape(email),
+        csv_escape(triage.as_str()),
+        csv_escape(dns_status),
+        csv_escape(record.map(|value| value.outcome.as_str()).unwrap_or("")),
+        csv_escape(
+            &record
+                .and_then(|value| value.smtp_basic_code)
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+        ),
+        csv_escape(
+            record
+                .and_then(|value| value.smtp_enhanced_code.as_deref())
+                .unwrap_or(""),
+        ),
+        csv_escape(record.and_then(|value| value.smtp_reply_text.as_deref()).unwrap_or("")),
+        csv_escape(record.and_then(|value| value.mx_host.as_deref()).unwrap_or("")),
+        csv_escape(
+            &record
+                .map(|value| value.catch_all.to_string())
+                .unwrap_or_default(),
+        ),
+        csv_escape(
+            &record
+                .map(|value| value.cached.to_string())
+                .unwrap_or_default(),
+        ),
+        csv_escape(&Utc::now().to_rfc3339()),
+    ]
+    .join(",");
+
+    write_line(writer, &row, &writers.detail_csv_name)
+}
+
+fn csv_escape(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
 }
 
 fn write_line(
@@ -1701,259 +2590,17 @@ mod tests {
     #[test]
     fn extract_email_falls_back_for_unicode_domains() {
         let extractor_regex = Regex::new(r"(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}").unwrap();
-        let extracted = extract_email_from_line("unicode@münchen.de", &extractor_regex);
-        assert_eq!(extracted, Some("unicode@münchen.de".to_string()));
+        let extracted =
+            extract_email_candidate_from_line("User.Name@münchen.de", &extractor_regex).unwrap();
+        let parsed = parse_email_candidate(&extracted).unwrap();
+        assert_eq!(parsed.raw_local_part, "User.Name");
+        assert_eq!(parsed.normalized_domain, "xn--mnchen-3ya.de");
+        assert_eq!(parsed.normalized_email, "User.Name@xn--mnchen-3ya.de");
     }
 
     #[test]
     fn disposable_domains_are_embedded() {
         assert!(is_disposable_domain("mailinator.com"));
-    }
-
-    #[test]
-    fn inconclusive_and_dead_go_to_separate_outputs() {
-        let base_dir = std::env::temp_dir().join(format!(
-            "filteremail-test-{}",
-            Local::now().timestamp_nanos_opt().unwrap_or_default()
-        ));
-        let input_path = base_dir.join("emails.txt");
-        fs::create_dir_all(&base_dir).unwrap();
-        fs::write(
-            &input_path,
-            "alive@gmail.com\nmaybe@timeout.test\ndead@dead.test\nalive@gmail.com\n",
-        )
-        .unwrap();
-
-        let extractor_regex = Regex::new(r"(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}").unwrap();
-        let public_domains: HashSet<&'static str> = PUBLIC_DOMAINS.iter().copied().collect();
-        let edu_patterns = build_edu_patterns().unwrap();
-        let target_domains = HashSet::new();
-        let output_dir = base_dir.join("output");
-        fs::create_dir_all(&output_dir).unwrap();
-        let mut writers = build_writers(&output_dir, false).unwrap();
-        let run_output = output_dir.to_string_lossy().to_string();
-
-        let mut domain_results = HashMap::new();
-        domain_results.insert(
-            "gmail.com".to_string(),
-            DomainVerifyResult {
-                dns: MxStatus::HasMx,
-                smtp: None,
-            },
-        );
-        domain_results.insert(
-            "timeout.test".to_string(),
-            DomainVerifyResult {
-                dns: MxStatus::Inconclusive,
-                smtp: None,
-            },
-        );
-        domain_results.insert(
-            "dead.test".to_string(),
-            DomainVerifyResult {
-                dns: MxStatus::Dead,
-                smtp: None,
-            },
-        );
-
-        let payload = process_files_with_domain_results(
-            &[input_path.to_string_lossy().to_string()],
-            fs::metadata(&input_path).unwrap().len(),
-            &extractor_regex,
-            &public_domains,
-            &edu_patterns,
-            &target_domains,
-            ProcessingMode::VerifyDns,
-            0,
-            &domain_results,
-            false,
-            0,
-            &run_output,
-            Instant::now(),
-            &mut writers,
-            &mut |_payload, _event| Ok(()),
-        )
-        .unwrap();
-        flush_writers(&mut writers).unwrap();
-
-        assert_eq!(payload.mx_has_mx, 1);
-        assert_eq!(payload.mx_inconclusive, 1);
-        assert_eq!(payload.mx_dead, 1);
-        assert_eq!(payload.duplicates, 1);
-
-        let dead_file = fs::read_to_string(output_dir.join("10_dns_domain_chet__dead.txt")).unwrap();
-        let inconclusive_file =
-            fs::read_to_string(output_dir.join("13_dns_can_xem_them__inconclusive.txt")).unwrap();
-        assert!(dead_file.contains("dead@dead.test"));
-        assert!(inconclusive_file.contains("maybe@timeout.test"));
-    }
-
-    #[test]
-    fn verify_mode_keeps_successful_dns_results_in_explicit_buckets() {
-        let base_dir = std::env::temp_dir().join(format!(
-            "filteremail-verify-success-{}",
-            Local::now().timestamp_nanos_opt().unwrap_or_default()
-        ));
-        let input_path = base_dir.join("emails.txt");
-        fs::create_dir_all(&base_dir).unwrap();
-        fs::write(&input_path, "mx@gmail.com\nfallback@example.com\n").unwrap();
-
-        let extractor_regex = Regex::new(r"(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}").unwrap();
-        let public_domains: HashSet<&'static str> = PUBLIC_DOMAINS.iter().copied().collect();
-        let edu_patterns = build_edu_patterns().unwrap();
-        let target_domains = HashSet::new();
-        let output_dir = base_dir.join("output");
-        fs::create_dir_all(&output_dir).unwrap();
-        let mut writers = build_writers(&output_dir, false).unwrap();
-        let run_output = output_dir.to_string_lossy().to_string();
-
-        let mut domain_results = HashMap::new();
-        domain_results.insert(
-            "gmail.com".to_string(),
-            DomainVerifyResult {
-                dns: MxStatus::HasMx,
-                smtp: None,
-            },
-        );
-        domain_results.insert(
-            "example.com".to_string(),
-            DomainVerifyResult {
-                dns: MxStatus::ARecordFallback,
-                smtp: None,
-            },
-        );
-
-        let payload = process_files_with_domain_results(
-            &[input_path.to_string_lossy().to_string()],
-            fs::metadata(&input_path).unwrap().len(),
-            &extractor_regex,
-            &public_domains,
-            &edu_patterns,
-            &target_domains,
-            ProcessingMode::VerifyDns,
-            0,
-            &domain_results,
-            false,
-            0,
-            &run_output,
-            Instant::now(),
-            &mut writers,
-            &mut |_payload, _event| Ok(()),
-        )
-        .unwrap();
-        flush_writers(&mut writers).unwrap();
-
-        assert_eq!(payload.mx_has_mx, 1);
-        assert_eq!(payload.mx_a_fallback, 1);
-        assert_eq!(payload.public, 0);
-        assert_eq!(payload.custom, 0);
-
-        let mx_file = fs::read_to_string(output_dir.join("11_dns_mx_hop_le__has_mx.txt")).unwrap();
-        let fallback_file =
-            fs::read_to_string(output_dir.join("12_dns_fallback_a_record.txt")).unwrap();
-        assert!(mx_file.contains("mx@gmail.com"));
-        assert!(fallback_file.contains("fallback@example.com"));
-    }
-
-    #[test]
-    fn smtp_results_write_additive_output_files_for_has_mx_domains() {
-        let base_dir = std::env::temp_dir().join(format!(
-            "filteremail-smtp-files-{}",
-            Local::now().timestamp_nanos_opt().unwrap_or_default()
-        ));
-        let input_path = base_dir.join("emails.txt");
-        fs::create_dir_all(&base_dir).unwrap();
-        fs::write(
-            &input_path,
-            "ok@gmail.com\nreject@proton.me\ncatch@catchall.test\nfallback@example.com\n",
-        )
-        .unwrap();
-
-        let extractor_regex = Regex::new(r"(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}").unwrap();
-        let public_domains: HashSet<&'static str> = PUBLIC_DOMAINS.iter().copied().collect();
-        let edu_patterns = build_edu_patterns().unwrap();
-        let target_domains = HashSet::new();
-        let output_dir = base_dir.join("output");
-        fs::create_dir_all(&output_dir).unwrap();
-        let mut writers = build_writers(&output_dir, true).unwrap();
-        let run_output = output_dir.to_string_lossy().to_string();
-
-        let mut domain_results = HashMap::new();
-        domain_results.insert(
-            "gmail.com".to_string(),
-            DomainVerifyResult {
-                dns: MxStatus::HasMx,
-                smtp: Some(SmtpStatus::Deliverable),
-            },
-        );
-        domain_results.insert(
-            "proton.me".to_string(),
-            DomainVerifyResult {
-                dns: MxStatus::HasMx,
-                smtp: Some(SmtpStatus::Rejected),
-            },
-        );
-        domain_results.insert(
-            "catchall.test".to_string(),
-            DomainVerifyResult {
-                dns: MxStatus::HasMx,
-                smtp: Some(SmtpStatus::CatchAll),
-            },
-        );
-        domain_results.insert(
-            "example.com".to_string(),
-            DomainVerifyResult {
-                dns: MxStatus::ARecordFallback,
-                smtp: None,
-            },
-        );
-
-        let payload = process_files_with_domain_results(
-            &[input_path.to_string_lossy().to_string()],
-            fs::metadata(&input_path).unwrap().len(),
-            &extractor_regex,
-            &public_domains,
-            &edu_patterns,
-            &target_domains,
-            ProcessingMode::VerifyDns,
-            0,
-            &domain_results,
-            true,
-            123,
-            &run_output,
-            Instant::now(),
-            &mut writers,
-            &mut |_payload, _event| Ok(()),
-        )
-        .unwrap();
-        flush_writers(&mut writers).unwrap();
-
-        assert_eq!(payload.mx_has_mx, 3);
-        assert_eq!(payload.mx_a_fallback, 1);
-        assert_eq!(payload.smtp_deliverable, 1);
-        assert_eq!(payload.smtp_rejected, 1);
-        assert_eq!(payload.smtp_catchall, 1);
-        assert_eq!(payload.smtp_unknown, 0);
-        assert!(payload.smtp_enabled);
-        assert_eq!(payload.smtp_elapsed_ms, 123);
-
-        let has_mx_file = fs::read_to_string(output_dir.join("11_dns_mx_hop_le__has_mx.txt")).unwrap();
-        let deliverable_file =
-            fs::read_to_string(output_dir.join("20_smtp_gui_duoc__deliverable.txt")).unwrap();
-        let rejected_file =
-            fs::read_to_string(output_dir.join("21_smtp_tu_choi__rejected.txt")).unwrap();
-        let catchall_file =
-            fs::read_to_string(output_dir.join("22_smtp_catch_all.txt")).unwrap();
-        let fallback_file =
-            fs::read_to_string(output_dir.join("12_dns_fallback_a_record.txt")).unwrap();
-
-        assert!(has_mx_file.contains("ok@gmail.com"));
-        assert!(has_mx_file.contains("reject@proton.me"));
-        assert!(has_mx_file.contains("catch@catchall.test"));
-        assert!(deliverable_file.contains("ok@gmail.com"));
-        assert!(rejected_file.contains("reject@proton.me"));
-        assert!(catchall_file.contains("catch@catchall.test"));
-        assert!(fallback_file.contains("fallback@example.com"));
     }
 
     #[test]
@@ -1967,6 +2614,7 @@ mod tests {
 
         let mut values = HashMap::new();
         values.insert("gmail.com".to_string(), MxStatus::HasMx);
+        values.insert("null.test".to_string(), MxStatus::NullMx);
         values.insert(
             "gmial.com".to_string(),
             MxStatus::TypoSuggestion("gmail.com".to_string()),
@@ -1976,17 +2624,86 @@ mod tests {
         let restored = cache
             .load_many(&[
                 "gmail.com".to_string(),
+                "null.test".to_string(),
                 "gmial.com".to_string(),
                 "unknown.com".to_string(),
             ])
             .unwrap();
 
         assert_eq!(restored.get("gmail.com"), Some(&MxStatus::HasMx));
+        assert_eq!(restored.get("null.test"), Some(&MxStatus::NullMx));
         assert_eq!(
             restored.get("gmial.com"),
             Some(&MxStatus::TypoSuggestion("gmail.com".to_string()))
         );
         assert!(!restored.contains_key("unknown.com"));
+    }
+
+    #[test]
+    fn smtp_cache_preserves_exact_local_part() {
+        let base_dir = std::env::temp_dir().join(format!(
+            "filteremail-smtp-cache-{}",
+            Local::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let cache_path = base_dir.join("smtp_cache.sqlite3");
+        let cache = PersistentCache::new(&cache_path).unwrap();
+
+        cache
+            .store_smtp_many(&[
+                SmtpProbeRecord {
+                    email: "User.Name@gmail.com".to_string(),
+                    outcome: SmtpStatus::Accepted,
+                    cached: false,
+                    duration_ms: 10,
+                    ..Default::default()
+                },
+                SmtpProbeRecord {
+                    email: "other@gmail.com".to_string(),
+                    outcome: SmtpStatus::BadMailbox,
+                    cached: false,
+                    duration_ms: 11,
+                    ..Default::default()
+                },
+            ])
+            .unwrap();
+
+        let loaded = cache
+            .load_smtp_many(&[
+                parse_email_candidate("User.Name@gmail.com").unwrap(),
+                parse_email_candidate("user.name@gmail.com").unwrap(),
+                parse_email_candidate("other@gmail.com").unwrap(),
+            ])
+            .unwrap();
+
+        assert_eq!(
+            loaded.get("User.Name@gmail.com").map(|record| &record.outcome),
+            Some(&SmtpStatus::Accepted)
+        );
+        assert!(!loaded.contains_key("user.name@gmail.com"));
+        assert_eq!(
+            loaded.get("other@gmail.com").map(|record| &record.outcome),
+            Some(&SmtpStatus::BadMailbox)
+        );
+    }
+
+    #[test]
+    fn synthetic_smtp_fallback_records_are_not_persisted() {
+        let fallback = SmtpProbeRecord {
+            email: "person@gmail.com".to_string(),
+            outcome: SmtpStatus::Inconclusive,
+            ..Default::default()
+        };
+        let real_timeout = SmtpProbeRecord {
+            email: "person@gmail.com".to_string(),
+            outcome: SmtpStatus::Inconclusive,
+            smtp_reply_text: Some("timed out".to_string()),
+            mx_host: Some("gmail-smtp-in.l.google.com".to_string()),
+            duration_ms: 1_234,
+            ..Default::default()
+        };
+
+        assert!(!should_persist_smtp_record(&fallback));
+        assert!(should_persist_smtp_record(&real_timeout));
     }
 
     #[tokio::test]
@@ -1998,6 +2715,84 @@ mod tests {
             check_domain_mx_async("gmial.com".to_string(), resolver, cache, semaphore).await;
 
         assert_eq!(status, MxStatus::TypoSuggestion("gmail.com".to_string()));
+    }
+
+    #[test]
+    fn verify_second_pass_writes_t2_and_t4_outputs() {
+        let base_dir = std::env::temp_dir().join(format!(
+            "filteremail-verify-pass-{}",
+            Local::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let input_path = base_dir.join("emails.txt");
+        let output_dir = base_dir.join("output");
+        fs::create_dir_all(&output_dir).unwrap();
+        fs::write(
+            &input_path,
+            "alive@gmail.com\nmaybe@timeout.test\ndead@dead.test\ninvalid-line\nalive@gmail.com\n",
+        )
+        .unwrap();
+
+        let extractor_regex = Regex::new(r"(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}").unwrap();
+        let public_domains: HashSet<&'static str> = PUBLIC_DOMAINS.iter().copied().collect();
+        let edu_patterns = build_edu_patterns().unwrap();
+        let target_domains = HashSet::new();
+        let mut writers = build_writers(&output_dir, true, false).unwrap();
+        let mut stats = Stats::default();
+        let mut domain_statuses = HashMap::new();
+        domain_statuses.insert("gmail.com".to_string(), MxStatus::HasMx);
+        domain_statuses.insert("timeout.test".to_string(), MxStatus::Inconclusive);
+        domain_statuses.insert("dead.test".to_string(), MxStatus::Dead);
+
+        let result = process_second_pass(
+            &[input_path.to_string_lossy().to_string()],
+            fs::metadata(&input_path).unwrap().len(),
+            &extractor_regex,
+            &public_domains,
+            &edu_patterns,
+            &target_domains,
+            ProcessingMode::VerifyDns,
+            &domain_statuses,
+            false,
+            &output_dir.to_string_lossy(),
+            Instant::now(),
+            &mut writers,
+            &mut stats,
+            &mut |_payload, _event| Ok(()),
+        )
+        .unwrap();
+        flush_writers(&mut writers).unwrap();
+
+        assert_eq!(result.processed_lines, 5);
+        assert_eq!(stats.invalid, 1);
+        assert_eq!(stats.mx_has_mx, 1);
+        assert_eq!(stats.mx_inconclusive, 1);
+        assert_eq!(stats.mx_dead, 1);
+        assert_eq!(stats.duplicates, 1);
+        assert_eq!(stats.final_dead, 2);
+        assert_eq!(stats.final_unknown, 2);
+
+        let has_mx_file =
+            fs::read_to_string(output_dir.join("10_T2_DNS_Valid_Has_MX.txt")).unwrap();
+        let inconclusive_file =
+            fs::read_to_string(output_dir.join("16_T2_DNS_Inconclusive.txt")).unwrap();
+        let dead_file =
+            fs::read_to_string(output_dir.join("12_T2_DNS_Error_Dead.txt")).unwrap();
+        let final_dead_file =
+            fs::read_to_string(output_dir.join("31_T4_FINAL_Dead.txt")).unwrap();
+        let final_unknown_file =
+            fs::read_to_string(output_dir.join("32_T4_FINAL_Unknown.txt")).unwrap();
+        let detail_csv =
+            fs::read_to_string(output_dir.join("33_T4_FINAL_Detail.csv")).unwrap();
+
+        assert!(has_mx_file.contains("alive@gmail.com"));
+        assert!(inconclusive_file.contains("maybe@timeout.test"));
+        assert!(dead_file.contains("dead@dead.test"));
+        assert!(final_dead_file.contains("dead@dead.test"));
+        assert!(final_dead_file.contains("invalid-line"));
+        assert!(final_unknown_file.contains("alive@gmail.com"));
+        assert!(final_unknown_file.contains("maybe@timeout.test"));
+        assert!(detail_csv.contains("SyntaxInvalid"));
+        assert!(detail_csv.contains("Inconclusive"));
     }
 
     #[test]

@@ -103,6 +103,25 @@ The application automatically creates neatly categorized files in your selected 
 20_smtp_gui_duoc__deliverable.txt
 ```
 
+## 📊 Verification Evaluation
+
+To score verify quality without changing backend logic, use the evaluation workflow in:
+
+- [docs/verify-evaluation.md](/Users/sangspm/Documents/FilterEmail/docs/verify-evaluation.md)
+
+It measures:
+
+- `Alive precision`
+- `Dead precision`
+- `Coverage`
+
+The helper script is:
+
+```bash
+python3 tools/verify_eval.py prepare /path/to/33_T4_FINAL_Detail.csv /path/to/verify_review.csv
+python3 tools/verify_eval.py score /path/to/verify_review.csv
+```
+
 ## 📝 License
 © 2026 HulkBeoti. All Rights Reserved.
 

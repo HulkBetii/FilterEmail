@@ -70,9 +70,25 @@ type ProcessingPayload = {
   smtp_enabled: boolean;
   smtp_elapsed_ms: number;
   cache_hits: number;
+  final_alive: number;
+  final_dead: number;
+  final_unknown: number;
+  smtp_attempted_emails: number;
+  smtp_cache_hits: number;
+  smtp_coverage_percent: number;
+  smtp_policy_blocked: number;
+  smtp_temp_failure: number;
+  smtp_mailbox_full: number;
+  smtp_mailbox_disabled: number;
+  smtp_bad_mailbox: number;
+  smtp_bad_domain: number;
+  smtp_network_error: number;
+  smtp_protocol_error: number;
+  smtp_timeout: number;
   elapsed_ms: number;
   output_dir?: string;
   current_domain?: string | null;
+  current_email?: string | null;
 };
 
 type BannerState =
@@ -111,8 +127,24 @@ const initialStats: ProcessingPayload = {
   smtp_enabled: false,
   smtp_elapsed_ms: 0,
   cache_hits: 0,
+  final_alive: 0,
+  final_dead: 0,
+  final_unknown: 0,
+  smtp_attempted_emails: 0,
+  smtp_cache_hits: 0,
+  smtp_coverage_percent: 0,
+  smtp_policy_blocked: 0,
+  smtp_temp_failure: 0,
+  smtp_mailbox_full: 0,
+  smtp_mailbox_disabled: 0,
+  smtp_bad_mailbox: 0,
+  smtp_bad_domain: 0,
+  smtp_network_error: 0,
+  smtp_protocol_error: 0,
+  smtp_timeout: 0,
   elapsed_ms: 0,
   current_domain: null,
+  current_email: null,
 };
 
 const DEFAULT_TIMEOUT_MS = 1500;
@@ -186,6 +218,7 @@ function normalizeStats(value: Partial<ProcessingPayload> | null | undefined): P
     ...value,
     output_dir: value?.output_dir,
     current_domain: value?.current_domain ?? null,
+    current_email: value?.current_email ?? null,
   };
 }
 
@@ -207,7 +240,10 @@ function isVerifyStats(stats: ProcessingPayload) {
     stats.smtp_rejected > 0 ||
     stats.smtp_catchall > 0 ||
     stats.smtp_unknown > 0 ||
-    stats.cache_hits > 0
+    stats.cache_hits > 0 ||
+    stats.final_alive > 0 ||
+    stats.final_dead > 0 ||
+    stats.final_unknown > 0
   );
 }
 
@@ -341,7 +377,10 @@ export default function App() {
     if (isProcessing && stats.processed_lines > 0) {
       setBanner({
         tone: "idle",
-        message: t.progressBanner(stats.processed_lines, stats.current_domain),
+        message: t.progressBanner(
+          stats.processed_lines,
+          stats.current_domain ?? stats.current_email,
+        ),
       });
       return;
     }
@@ -382,6 +421,7 @@ export default function App() {
     outputDir,
     selectedFiles,
     stats.current_domain,
+    stats.current_email,
     stats.processed_lines,
     t,
   ]);
@@ -399,7 +439,7 @@ export default function App() {
           tone: "idle",
           message: translations[language].progressBanner(
             normalized.processed_lines,
-            normalized.current_domain,
+            normalized.current_domain ?? normalized.current_email,
           ),
         });
       });
@@ -516,13 +556,14 @@ export default function App() {
       stats.mx_typo,
     [stats],
   );
+  const finalTotal = stats.final_alive + stats.final_dead + stats.final_unknown;
 
   const invalidRate = totalClassified === 0 ? 0 : (stats.invalid / totalClassified) * 100;
   const publicRate = totalClassified === 0 ? 0 : (stats.public / totalClassified) * 100;
   const eduRate = totalClassified === 0 ? 0 : (stats.edu / totalClassified) * 100;
   const targetedRate = totalClassified === 0 ? 0 : (stats.targeted / totalClassified) * 100;
   const customRate = totalClassified === 0 ? 0 : (stats.custom / totalClassified) * 100;
-  const verifyDeliverableCount = stats.mx_has_mx + stats.mx_a_fallback;
+  const verifyDeliverableCount = stats.final_alive;
   const verifyDomainCount =
     stats.mx_dead +
     stats.mx_has_mx +
@@ -533,20 +574,18 @@ export default function App() {
     stats.mx_typo;
   const verifyReviewCount =
     stats.mx_inconclusive + stats.mx_parked + stats.mx_disposable + stats.mx_typo;
-  const verifyDeliverableRate =
-    totalClassified === 0 ? 0 : (verifyDeliverableCount / totalClassified) * 100;
-  const verifyDeadRate = totalClassified === 0 ? 0 : (stats.mx_dead / totalClassified) * 100;
-  const verifyReviewRate =
-    totalClassified === 0 ? 0 : (verifyReviewCount / totalClassified) * 100;
+  const verifyDeliverableRate = finalTotal === 0 ? 0 : (stats.final_alive / finalTotal) * 100;
+  const verifyDeadRate = finalTotal === 0 ? 0 : (stats.final_dead / finalTotal) * 100;
+  const verifyUnknownRate = finalTotal === 0 ? 0 : (stats.final_unknown / finalTotal) * 100;
+  const verifyReviewRate = finalTotal === 0 ? 0 : (verifyReviewCount / finalTotal) * 100;
   const verifyFallbackRate =
-    totalClassified === 0 ? 0 : (stats.mx_a_fallback / totalClassified) * 100;
+    finalTotal === 0 ? 0 : (stats.mx_a_fallback / finalTotal) * 100;
   const verifyParkedRate =
-    totalClassified === 0 ? 0 : (stats.mx_parked / totalClassified) * 100;
+    finalTotal === 0 ? 0 : (stats.mx_parked / finalTotal) * 100;
   const verifyDisposableRate =
-    totalClassified === 0 ? 0 : (stats.mx_disposable / totalClassified) * 100;
-  const verifyTypoRate = totalClassified === 0 ? 0 : (stats.mx_typo / totalClassified) * 100;
-  const smtpCheckedCount =
-    stats.smtp_deliverable + stats.smtp_rejected + stats.smtp_catchall + stats.smtp_unknown;
+    finalTotal === 0 ? 0 : (stats.mx_disposable / finalTotal) * 100;
+  const verifyTypoRate = finalTotal === 0 ? 0 : (stats.mx_typo / finalTotal) * 100;
+  const smtpCheckedCount = stats.smtp_attempted_emails;
   const smtpDeliverableRate =
     smtpCheckedCount === 0 ? 0 : (stats.smtp_deliverable / smtpCheckedCount) * 100;
   const smtpRejectedRate =
@@ -555,9 +594,10 @@ export default function App() {
     smtpCheckedCount === 0 ? 0 : (stats.smtp_catchall / smtpCheckedCount) * 100;
   const smtpUnknownRate =
     smtpCheckedCount === 0 ? 0 : (stats.smtp_unknown / smtpCheckedCount) * 100;
+  const smtpCoveragePercent = stats.smtp_coverage_percent;
   const validCount =
     activeTab === "verify"
-      ? verifyDeliverableCount
+      ? stats.final_alive
       : stats.public + stats.edu + stats.targeted + stats.custom;
 
   const pickInputFile = async () => {
@@ -738,7 +778,7 @@ export default function App() {
           activeTab={activeTab}
           language={language}
           dragActive={dragActive}
-          totalClassified={totalClassified}
+          totalClassified={verifyMode ? finalTotal : totalClassified}
           progressPercent={stats.progress_percent}
           isProcessing={isProcessing}
           currentDomain={stats.current_domain ?? null}
@@ -997,11 +1037,12 @@ export default function App() {
             </button>
 
             {/* Real-time scanning indicator */}
-            {isProcessing && verifyMode && stats.current_domain && (
+            {isProcessing && verifyMode && (stats.current_domain || stats.current_email) && (
               <div className="flex items-center gap-2 rounded-2xl border border-violet-200 bg-violet-50 px-4 py-2.5 text-xs font-semibold text-violet-700">
                 <LoaderCircle className="h-3.5 w-3.5 shrink-0 animate-spin" />
                 <span className="min-w-0 truncate">
-                  {language === "vi" ? "Đang quét:" : "Scanning:"} <span className="font-bold">{stats.current_domain}</span>
+                  {language === "vi" ? "Đang quét:" : "Scanning:"}{" "}
+                  <span className="font-bold">{stats.current_domain ?? stats.current_email}</span>
                 </span>
                   {stats.cache_hits > 0 && (
                     <span className="ml-auto shrink-0 rounded-full bg-violet-200 px-2 py-0.5 text-violet-800">
@@ -1015,6 +1056,31 @@ export default function App() {
           <div className="space-y-3 lg:col-span-7">
             {verifyMode && (
               <>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <VerifyHeroCard
+                    bucket="final_alive"
+                    label={t.labels.final_alive}
+                    value={formatLocaleNumber(stats.final_alive, language)}
+                    fileName="30_T4_FINAL_Alive.txt"
+                  />
+                  <VerifyHeroCard
+                    bucket="final_dead"
+                    label={t.labels.final_dead}
+                    value={formatLocaleNumber(stats.final_dead, language)}
+                    fileName="31_T4_FINAL_Dead.txt"
+                  />
+                  <VerifyHeroCard
+                    bucket="final_unknown"
+                    label={t.labels.final_unknown}
+                    value={formatLocaleNumber(stats.final_unknown, language)}
+                    fileName="32_T4_FINAL_Unknown.txt"
+                  />
+                </div>
+
+                <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm font-medium text-sky-900">
+                  {t.labels.smtp_alive_note}
+                </div>
+
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <VerifyHeroCard
                     bucket="mx_has_mx"
@@ -1040,6 +1106,42 @@ export default function App() {
                     value={formatLocaleNumber(stats.mx_inconclusive, language)}
                     fileName="16_T2_DNS_Inconclusive.txt"
                   />
+                </div>
+
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                      {t.labels.smtp_attempted_emails}
+                    </p>
+                    <p className="mt-2 text-2xl font-extrabold text-slate-900">
+                      {formatLocaleNumber(stats.smtp_attempted_emails, language)}
+                    </p>
+                    <p className="mt-1 text-xs font-semibold text-slate-500">
+                      {formatLocaleNumber(stats.mx_has_mx, language)} Has MX
+                    </p>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                      {t.labels.smtp_coverage_percent}
+                    </p>
+                    <p className="mt-2 text-2xl font-extrabold text-slate-900">
+                      {stats.smtp_coverage_percent.toFixed(1)}%
+                    </p>
+                    <p className="mt-1 text-xs font-semibold text-slate-500">
+                      {formatLocaleNumber(stats.smtp_cache_hits, language)} {t.labels.smtp_cache_hits.toLowerCase()}
+                    </p>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                      {t.labels.smtp_cache_hits}
+                    </p>
+                    <p className="mt-2 text-2xl font-extrabold text-slate-900">
+                      {formatLocaleNumber(stats.smtp_cache_hits, language)}
+                    </p>
+                    <p className="mt-1 text-xs font-semibold text-slate-500">
+                      {t.labels.cacheCoverage(stats.smtp_cache_hits, stats.smtp_attempted_emails)}
+                    </p>
+                  </div>
                 </div>
 
                 {/* Review group: parked / disposable / typo */}
@@ -1159,17 +1261,19 @@ export default function App() {
           }}
         />
 
-        {totalClassified > 0 && (
+        {(verifyMode ? finalTotal > 0 : totalClassified > 0) && (
           <FinalSummary
             verifyMode={verifyMode}
             labels={t.labels}
             totalClassified={totalClassified}
+            finalTotal={finalTotal}
             stats={stats}
             resolvedOutputDir={resolvedOutputDir}
             canOpenFolder={canOpenFolder}
             verifyDeliverableCount={verifyDeliverableCount}
             verifyDeliverableRate={verifyDeliverableRate}
             verifyDeadRate={verifyDeadRate}
+            verifyUnknownRate={verifyUnknownRate}
             verifyReviewCount={verifyReviewCount}
             verifyReviewRate={verifyReviewRate}
             verifyFallbackRate={verifyFallbackRate}
@@ -1182,6 +1286,7 @@ export default function App() {
             smtpRejectedRate={smtpRejectedRate}
             smtpCatchallRate={smtpCatchallRate}
             smtpUnknownRate={smtpUnknownRate}
+            smtpCoveragePercent={smtpCoveragePercent}
             invalidRate={invalidRate}
             publicRate={publicRate}
             eduRate={eduRate}

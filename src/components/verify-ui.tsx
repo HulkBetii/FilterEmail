@@ -9,6 +9,24 @@ import {
 } from "lucide-react";
 
 export const verifyBucketTone = {
+  final_alive: {
+    panel: "border-emerald-200 bg-emerald-50",
+    label: "text-emerald-700",
+    value: "text-emerald-900",
+    item: "border-emerald-100 bg-white",
+  },
+  final_dead: {
+    panel: "border-red-200 bg-red-50",
+    label: "text-red-600",
+    value: "text-red-900",
+    item: "border-red-100 bg-white",
+  },
+  final_unknown: {
+    panel: "border-amber-200 bg-amber-50",
+    label: "text-amber-700",
+    value: "text-amber-900",
+    item: "border-amber-100 bg-white",
+  },
   mx_has_mx: {
     panel: "border-emerald-200 bg-emerald-50",
     label: "text-emerald-700",
@@ -75,11 +93,38 @@ export const verifyBucketTone = {
     value: "text-slate-900",
     item: "border-slate-200 bg-white",
   },
+  smtp_policy_blocked: {
+    panel: "border-amber-200 bg-amber-50",
+    label: "text-amber-700",
+    value: "text-amber-900",
+    item: "border-amber-100 bg-white",
+  },
+  smtp_temp_failure: {
+    panel: "border-blue-200 bg-blue-50",
+    label: "text-blue-700",
+    value: "text-blue-900",
+    item: "border-blue-100 bg-white",
+  },
+  smtp_mailbox_full: {
+    panel: "border-orange-200 bg-orange-50",
+    label: "text-orange-700",
+    value: "text-orange-900",
+    item: "border-orange-100 bg-white",
+  },
+  smtp_mailbox_disabled: {
+    panel: "border-slate-200 bg-slate-50",
+    label: "text-slate-700",
+    value: "text-slate-900",
+    item: "border-slate-200 bg-white",
+  },
 } as const;
 
 export type VerifyBucketKey = keyof typeof verifyBucketTone;
 
 const verifyBucketIcon: Record<VerifyBucketKey, typeof CheckCircle> = {
+  final_alive: CheckCircle,
+  final_dead: XCircle,
+  final_unknown: AlertCircle,
   mx_has_mx: CheckCircle,
   mx_a_fallback: FolderOpen,
   mx_dead: AlertCircle,
@@ -91,6 +136,10 @@ const verifyBucketIcon: Record<VerifyBucketKey, typeof CheckCircle> = {
   smtp_rejected: XCircle,
   smtp_catchall: ShieldCheck,
   smtp_unknown: AlertCircle,
+  smtp_policy_blocked: ShieldCheck,
+  smtp_temp_failure: AlertCircle,
+  smtp_mailbox_full: Trash2,
+  smtp_mailbox_disabled: XCircle,
 };
 
 export function VerifyHeroCard({
@@ -107,6 +156,9 @@ export function VerifyHeroCard({
   const Icon = verifyBucketIcon[bucket];
   const tone = verifyBucketTone[bucket];
   const solidIconBg = {
+    final_alive: "bg-emerald-600 shadow-emerald-600/30",
+    final_dead: "bg-red-600 shadow-red-600/30",
+    final_unknown: "bg-amber-500 shadow-amber-500/30",
     mx_has_mx: "bg-emerald-600 shadow-emerald-600/30",
     mx_a_fallback: "bg-cyan-600 shadow-cyan-600/30",
     mx_dead: "bg-red-600 shadow-red-600/30",
@@ -118,6 +170,10 @@ export function VerifyHeroCard({
     smtp_rejected: "bg-rose-600 shadow-rose-600/30",
     smtp_catchall: "bg-amber-500 shadow-amber-500/30",
     smtp_unknown: "bg-slate-600 shadow-slate-600/30",
+    smtp_policy_blocked: "bg-amber-500 shadow-amber-500/30",
+    smtp_temp_failure: "bg-blue-600 shadow-blue-600/30",
+    smtp_mailbox_full: "bg-orange-500 shadow-orange-500/30",
+    smtp_mailbox_disabled: "bg-slate-600 shadow-slate-600/30",
   } as const;
 
   return (

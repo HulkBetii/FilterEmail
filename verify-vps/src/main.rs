@@ -26,22 +26,47 @@ struct AppState {
 }
 
 #[derive(Debug, Deserialize)]
-struct VerifySmtpRequest {
+struct LegacyVerifySmtpRequest {
     domains: Vec<String>,
     emails: HashMap<String, String>,
 }
 
 #[derive(Debug, Serialize)]
-struct VerifySmtpResponse {
-    results: HashMap<String, VerifySmtpResult>,
+struct LegacyVerifySmtpResponse {
+    results: HashMap<String, LegacyVerifySmtpResult>,
     elapsed_ms: u64,
 }
 
 #[derive(Debug, Serialize)]
-struct VerifySmtpResult {
-    status: SmtpStatus,
+struct LegacyVerifySmtpResult {
+    status: LegacySmtpStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     mx_host: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+enum LegacySmtpStatus {
+    Deliverable,
+    Rejected,
+    CatchAll,
+    Inconclusive,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct VerifySmtpV2Request {
+    targets: Vec<VerifySmtpV2Target>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct VerifySmtpV2Target {
+    email: String,
+    normalized_domain: String,
+}
+
+#[derive(Debug, Serialize)]
+struct VerifySmtpV2Response {
+    results: Vec<SmtpProbeResult>,
+    elapsed_ms: u64,
 }
 
 #[tokio::main]
@@ -68,7 +93,8 @@ async fn main() -> Result<()> {
     };
 
     let app = Router::new()
-        .route("/verify/smtp", post(verify_smtp))
+        .route("/verify/smtp", post(verify_smtp_legacy))
+        .route("/verify/smtp/v2", post(verify_smtp_v2))
         .with_state(state);
 
     let addr: SocketAddr = bind_addr.parse().context("Invalid BIND_ADDR")?;
@@ -91,15 +117,15 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn verify_smtp(
+async fn verify_smtp_legacy(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(payload): Json<VerifySmtpRequest>,
-) -> Result<Json<VerifySmtpResponse>, (StatusCode, String)> {
+    Json(payload): Json<LegacyVerifySmtpRequest>,
+) -> Result<Json<LegacyVerifySmtpResponse>, (StatusCode, String)> {
     authorize(&headers, &state.api_key)?;
     let started = std::time::Instant::now();
-
     let mut join_set = tokio::task::JoinSet::new();
+
     for domain in payload.domains {
         let verifier = Arc::clone(&state.verifier);
         let semaphore = Arc::clone(&state.semaphore);
@@ -124,10 +150,47 @@ async fn verify_smtp(
                 format!("SMTP task failed: {error}"),
             )
         })?;
-        results.insert(domain, to_response_item(smtp_result));
+        results.insert(domain, to_legacy_response_item(smtp_result));
     }
 
-    Ok(Json(VerifySmtpResponse {
+    Ok(Json(LegacyVerifySmtpResponse {
+        results,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    }))
+}
+
+async fn verify_smtp_v2(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<VerifySmtpV2Request>,
+) -> Result<Json<VerifySmtpV2Response>, (StatusCode, String)> {
+    authorize(&headers, &state.api_key)?;
+    let started = std::time::Instant::now();
+
+    let mut join_set = tokio::task::JoinSet::new();
+    for target in payload.targets {
+        let verifier = Arc::clone(&state.verifier);
+        let semaphore = Arc::clone(&state.semaphore);
+        join_set.spawn(async move {
+            let _permit = semaphore.acquire_owned().await.ok();
+            verifier
+                .verify_email(&target.normalized_domain, &target.email)
+                .await
+        });
+    }
+
+    let mut results = Vec::new();
+    while let Some(result) = join_set.join_next().await {
+        let smtp_result = result.map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("SMTP task failed: {error}"),
+            )
+        })?;
+        results.push(smtp_result);
+    }
+
+    Ok(Json(VerifySmtpV2Response {
         results,
         elapsed_ms: started.elapsed().as_millis() as u64,
     }))
@@ -153,9 +216,15 @@ fn authorize(headers: &HeaderMap, expected_api_key: &str) -> Result<(), (StatusC
     Ok(())
 }
 
-fn to_response_item(result: SmtpProbeResult) -> VerifySmtpResult {
-    VerifySmtpResult {
-        status: result.status,
+fn to_legacy_response_item(result: SmtpProbeResult) -> LegacyVerifySmtpResult {
+    let status = match result.outcome {
+        SmtpStatus::Accepted | SmtpStatus::AcceptedForwarded => LegacySmtpStatus::Deliverable,
+        SmtpStatus::BadMailbox | SmtpStatus::BadDomain => LegacySmtpStatus::Rejected,
+        SmtpStatus::CatchAll => LegacySmtpStatus::CatchAll,
+        _ => LegacySmtpStatus::Inconclusive,
+    };
+    LegacyVerifySmtpResult {
+        status,
         mx_host: result.mx_host,
     }
 }

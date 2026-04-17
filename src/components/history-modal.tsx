@@ -24,6 +24,21 @@ type ProcessingPayload = {
   smtp_enabled: boolean;
   smtp_elapsed_ms: number;
   cache_hits: number;
+  final_alive: number;
+  final_dead: number;
+  final_unknown: number;
+  smtp_attempted_emails: number;
+  smtp_cache_hits: number;
+  smtp_coverage_percent: number;
+  smtp_policy_blocked: number;
+  smtp_temp_failure: number;
+  smtp_mailbox_full: number;
+  smtp_mailbox_disabled: number;
+  smtp_bad_mailbox: number;
+  smtp_bad_domain: number;
+  smtp_network_error: number;
+  smtp_protocol_error: number;
+  smtp_timeout: number;
   elapsed_ms: number;
   output_dir?: string;
 };
@@ -100,31 +115,28 @@ export function HistoryModal({
           ) : (
             history.map((entry) => {
               const entryIsVerify = entry.mode === "verify";
-              const total =
-                entry.stats.invalid +
-                entry.stats.public +
-                entry.stats.edu +
-                entry.stats.targeted +
-                entry.stats.custom +
-                entry.stats.duplicates +
-                entry.stats.mx_dead +
-                entry.stats.mx_has_mx +
-                entry.stats.mx_a_fallback +
-                entry.stats.mx_inconclusive +
-                entry.stats.mx_parked +
-                entry.stats.mx_disposable +
-                entry.stats.mx_typo;
+              const total = entryIsVerify
+                ? entry.stats.final_alive + entry.stats.final_dead + entry.stats.final_unknown
+                : entry.stats.invalid +
+                  entry.stats.public +
+                  entry.stats.edu +
+                  entry.stats.targeted +
+                  entry.stats.custom +
+                  entry.stats.duplicates +
+                  entry.stats.mx_dead +
+                  entry.stats.mx_has_mx +
+                  entry.stats.mx_a_fallback +
+                  entry.stats.mx_inconclusive +
+                  entry.stats.mx_parked +
+                  entry.stats.mx_disposable +
+                  entry.stats.mx_typo;
               const valid = entryIsVerify
-                ? entry.stats.mx_has_mx + entry.stats.mx_a_fallback
+                ? entry.stats.final_alive
                 : entry.stats.public +
                   entry.stats.edu +
                   entry.stats.targeted +
                   entry.stats.custom;
-              const review =
-                entry.stats.mx_inconclusive +
-                entry.stats.mx_parked +
-                entry.stats.mx_disposable +
-                entry.stats.mx_typo;
+              const review = entryIsVerify ? entry.stats.final_unknown : entry.stats.invalid;
               const verifyDomainCount =
                 entry.stats.mx_dead +
                 entry.stats.mx_has_mx +
@@ -133,16 +145,17 @@ export function HistoryModal({
                 entry.stats.mx_parked +
                 entry.stats.mx_disposable +
                 entry.stats.mx_typo;
-              const smtpChecked =
-                entry.stats.smtp_deliverable +
-                entry.stats.smtp_rejected +
-                entry.stats.smtp_catchall +
-                entry.stats.smtp_unknown;
+              const smtpChecked = entry.stats.smtp_attempted_emails;
               const historyCards = entryIsVerify
                 ? []
                 : statCards.filter((card) =>
                     ["invalid", "public", "edu", "targeted", "custom", "duplicates"].includes(card.key),
                   );
+              const finalHistoryCards: VerifyBucketKey[] = [
+                "final_alive",
+                "final_dead",
+                "final_unknown",
+              ];
               const successHistoryCards: VerifyBucketKey[] = ["mx_has_mx", "mx_a_fallback"];
               const reviewHistoryCards: VerifyBucketKey[] = [
                 "mx_inconclusive",
@@ -156,6 +169,17 @@ export function HistoryModal({
                 "smtp_rejected",
                 "smtp_catchall",
                 "smtp_unknown",
+              ];
+              const unknownBreakdownCards: VerifyBucketKey[] = [
+                "smtp_policy_blocked",
+                "smtp_temp_failure",
+                "smtp_mailbox_full",
+                "smtp_mailbox_disabled",
+                "mx_inconclusive",
+                "mx_typo",
+                "mx_disposable",
+                "mx_parked",
+                "mx_a_fallback",
               ];
 
               return (
@@ -201,7 +225,7 @@ export function HistoryModal({
                       </div>
                       <div className="rounded-lg border border-emerald-100 bg-emerald-50 p-2 text-center shadow-sm">
                         <div className="text-[10px] font-bold uppercase text-emerald-600">
-                          {entryIsVerify ? labels.summaryVerified : labels.valid}
+                          {entryIsVerify ? labels.final_alive : labels.valid}
                         </div>
                         <div className="text-sm font-bold text-emerald-700">{formatNumber(valid)}</div>
                       </div>
@@ -226,23 +250,34 @@ export function HistoryModal({
                         </div>
                       )}
                       <div className="rounded-lg border border-red-100 bg-red-50 p-2 text-center shadow-sm">
-                        <div className="text-[10px] font-bold uppercase text-red-500">{labels.deadDomains}</div>
+                        <div className="text-[10px] font-bold uppercase text-red-500">
+                          {entryIsVerify ? labels.final_dead : labels.deadDomains}
+                        </div>
                         <div className="text-sm font-bold text-red-700">
-                          {formatNumber(entry.stats.mx_dead)}
+                          {formatNumber(entryIsVerify ? entry.stats.final_dead : entry.stats.mx_dead)}
                         </div>
                       </div>
                       <div className="rounded-lg border border-amber-100 bg-amber-50 p-2 text-center shadow-sm">
                         <div className="text-[10px] font-bold uppercase text-amber-600">
-                          {entryIsVerify ? labels.reviewDomains : labels.invalid}
+                          {entryIsVerify ? labels.final_unknown : labels.invalid}
                         </div>
                         <div className="text-sm font-bold text-amber-700">
-                          {formatNumber(entryIsVerify ? review : entry.stats.invalid)}
+                          {formatNumber(review)}
                         </div>
                       </div>
                     </div>
 
                     {entryIsVerify ? (
                       <div className="grid grid-cols-1 gap-3">
+                        <VerifyHistoryGroup
+                          title={labels.summaryTitle}
+                          titleClassName="text-slate-700"
+                          className="rounded-xl border border-slate-200 bg-white p-3"
+                          buckets={finalHistoryCards}
+                          getValue={(bucket) => entry.stats[bucket] || 0}
+                          getLabel={(bucket) => labels[bucket]}
+                          formatValue={formatNumber}
+                        />
                         <VerifyHistoryGroup
                           title={labels.historySuccessGroup}
                           titleClassName="text-emerald-700"
@@ -281,6 +316,15 @@ export function HistoryModal({
                             formatValue={formatNumber}
                           />
                         )}
+                        <VerifyHistoryGroup
+                          title={labels.smtp_unknown_breakdown}
+                          titleClassName="text-amber-700"
+                          className="rounded-xl border border-amber-100 bg-amber-50/60 p-3"
+                          buckets={unknownBreakdownCards}
+                          getValue={(bucket) => entry.stats[bucket] || 0}
+                          getLabel={(bucket) => labels[bucket]}
+                          formatValue={formatNumber}
+                        />
                       </div>
                     ) : (
                       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">

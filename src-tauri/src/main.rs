@@ -13,6 +13,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::runtime::Handle;
 
 #[tauri::command(rename_all = "snake_case")]
+#[allow(clippy::too_many_arguments)]
 async fn process_file(
     app: AppHandle,
     file_paths: Vec<String>,
@@ -62,6 +63,7 @@ async fn process_file(
     .map_err(|error| error.to_string())?
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn process_file_impl(
     app: AppHandle,
     file_paths: Vec<String>,

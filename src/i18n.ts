@@ -30,6 +30,23 @@ type TranslationShape = {
     smtp_rejected: string;
     smtp_catchall: string;
     smtp_unknown: string;
+    final_alive: string;
+    final_dead: string;
+    final_unknown: string;
+    smtp_attempted_emails: string;
+    smtp_cache_hits: string;
+    smtp_coverage_percent: string;
+    smtp_policy_blocked: string;
+    smtp_temp_failure: string;
+    smtp_mailbox_full: string;
+    smtp_mailbox_disabled: string;
+    smtp_bad_mailbox: string;
+    smtp_bad_domain: string;
+    smtp_network_error: string;
+    smtp_protocol_error: string;
+    smtp_timeout: string;
+    smtp_unknown_breakdown: string;
+    smtp_alive_note: string;
     progress: string;
     linesProcessed: string;
     elapsed: string;
@@ -146,6 +163,24 @@ export const translations = {
       smtp_rejected: "SMTP Rejected",
       smtp_catchall: "SMTP Catch-All",
       smtp_unknown: "SMTP Unknown",
+      final_alive: "Final Alive",
+      final_dead: "Final Dead",
+      final_unknown: "Final Unknown",
+      smtp_attempted_emails: "SMTP Attempted",
+      smtp_cache_hits: "SMTP Cache Hits",
+      smtp_coverage_percent: "SMTP Coverage",
+      smtp_policy_blocked: "Policy Blocked",
+      smtp_temp_failure: "Temp Failure",
+      smtp_mailbox_full: "Mailbox Full",
+      smtp_mailbox_disabled: "Mailbox Disabled",
+      smtp_bad_mailbox: "Bad Mailbox",
+      smtp_bad_domain: "Bad Domain",
+      smtp_network_error: "Network Error",
+      smtp_protocol_error: "Protocol Error",
+      smtp_timeout: "SMTP Timeout",
+      smtp_unknown_breakdown: "Unknown Breakdown",
+      smtp_alive_note:
+        "Alive means high-confidence SMTP acceptance for this exact email address. It is not a guarantee of inbox placement.",
       progress: "Progress",
       linesProcessed: "Lines Processed",
       elapsed: "Time Elapsed",
@@ -269,6 +304,24 @@ export const translations = {
       smtp_rejected: "SMTP Từ Chối",
       smtp_catchall: "SMTP Catch-All",
       smtp_unknown: "SMTP Chưa Rõ",
+      final_alive: "Kết quả Alive",
+      final_dead: "Kết quả Dead",
+      final_unknown: "Kết quả Unknown",
+      smtp_attempted_emails: "SMTP Đã Thử",
+      smtp_cache_hits: "SMTP Cache Hits",
+      smtp_coverage_percent: "Độ Phủ SMTP",
+      smtp_policy_blocked: "Bị Chặn Chính Sách",
+      smtp_temp_failure: "Lỗi Tạm Thời",
+      smtp_mailbox_full: "Hộp Thư Đầy",
+      smtp_mailbox_disabled: "Hộp Thư Bị Vô Hiệu",
+      smtp_bad_mailbox: "Mailbox Không Tồn Tại",
+      smtp_bad_domain: "Domain Không Tồn Tại",
+      smtp_network_error: "Lỗi Mạng",
+      smtp_protocol_error: "Lỗi Giao Thức",
+      smtp_timeout: "SMTP Timeout",
+      smtp_unknown_breakdown: "Chi Tiết Unknown",
+      smtp_alive_note:
+        "Alive nghĩa là SMTP chấp nhận chính xác địa chỉ email này với độ tin cậy cao. Đây không phải cam kết email sẽ vào inbox.",
       progress: "Tiến độ",
       linesProcessed: "Số dòng đã xử lý",
       elapsed: "Thời gian đã trôi qua",

@@ -16,6 +16,21 @@ type ProcessingPayload = {
   smtp_enabled: boolean;
   smtp_elapsed_ms: number;
   cache_hits: number;
+  final_alive: number;
+  final_dead: number;
+  final_unknown: number;
+  smtp_attempted_emails: number;
+  smtp_cache_hits: number;
+  smtp_coverage_percent: number;
+  smtp_policy_blocked: number;
+  smtp_temp_failure: number;
+  smtp_mailbox_full: number;
+  smtp_mailbox_disabled: number;
+  smtp_bad_mailbox: number;
+  smtp_bad_domain: number;
+  smtp_network_error: number;
+  smtp_protocol_error: number;
+  smtp_timeout: number;
 };
 
 type Labels = (typeof translations.en)["labels"];
@@ -24,12 +39,14 @@ export function FinalSummary({
   verifyMode,
   labels,
   totalClassified,
+  finalTotal,
   stats,
   resolvedOutputDir,
   canOpenFolder,
   verifyDeliverableCount,
   verifyDeliverableRate,
   verifyDeadRate,
+  verifyUnknownRate,
   verifyReviewCount,
   verifyReviewRate,
   verifyFallbackRate,
@@ -42,6 +59,7 @@ export function FinalSummary({
   smtpRejectedRate,
   smtpCatchallRate,
   smtpUnknownRate,
+  smtpCoveragePercent,
   invalidRate,
   publicRate,
   eduRate,
@@ -54,12 +72,14 @@ export function FinalSummary({
   verifyMode: boolean;
   labels: Labels;
   totalClassified: number;
+  finalTotal: number;
   stats: ProcessingPayload;
   resolvedOutputDir: string;
   canOpenFolder: boolean;
   verifyDeliverableCount: number;
   verifyDeliverableRate: number;
   verifyDeadRate: number;
+  verifyUnknownRate: number;
   verifyReviewCount: number;
   verifyReviewRate: number;
   verifyFallbackRate: number;
@@ -72,6 +92,7 @@ export function FinalSummary({
   smtpRejectedRate: number;
   smtpCatchallRate: number;
   smtpUnknownRate: number;
+  smtpCoveragePercent: number;
   invalidRate: number;
   publicRate: number;
   eduRate: number;
@@ -109,15 +130,15 @@ export function FinalSummary({
                 {labels.summaryTotal}
               </div>
               <div className="mt-2 text-2xl font-extrabold text-slate-900">
-                {formatNumber(totalClassified)}
+                {formatNumber(finalTotal)}
               </div>
             </div>
             <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
               <div className="text-[10px] font-bold uppercase tracking-widest text-emerald-700">
-                {labels.summaryVerified}
+                {labels.final_alive}
               </div>
               <div className="mt-2 text-2xl font-extrabold text-emerald-900">
-                {formatNumber(verifyDeliverableCount)}
+                {formatNumber(stats.final_alive)}
               </div>
               <div className="mt-1 text-xs font-semibold text-emerald-700">
                 {verifyDeliverableRate.toFixed(1)}%
@@ -125,24 +146,28 @@ export function FinalSummary({
             </div>
             <div className="rounded-2xl border border-red-200 bg-red-50 p-4">
               <div className="text-[10px] font-bold uppercase tracking-widest text-red-600">
-                {labels.mx_dead}
+                {labels.final_dead}
               </div>
               <div className="mt-2 text-2xl font-extrabold text-red-900">
-                {formatNumber(stats.mx_dead)}
+                {formatNumber(stats.final_dead)}
               </div>
               <div className="mt-1 text-xs font-semibold text-red-600">{verifyDeadRate.toFixed(1)}%</div>
             </div>
             <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
               <div className="text-[10px] font-bold uppercase tracking-widest text-amber-700">
-                {labels.mx_inconclusive}
+                {labels.final_unknown}
               </div>
               <div className="mt-2 text-2xl font-extrabold text-amber-900">
-                {formatNumber(verifyReviewCount)}
+                {formatNumber(stats.final_unknown)}
               </div>
               <div className="mt-1 text-xs font-semibold text-amber-700">
-                {verifyReviewRate.toFixed(1)}%
+                {verifyUnknownRate.toFixed(1)}%
               </div>
             </div>
+          </div>
+
+          <div className="mt-3 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm font-medium text-sky-900">
+            {labels.smtp_alive_note}
           </div>
 
           <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -166,7 +191,7 @@ export function FinalSummary({
             </div>
           </div>
 
-          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div className="rounded-2xl bg-slate-50 p-4">
               <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
                 {labels.summaryFolder}
@@ -175,10 +200,19 @@ export function FinalSummary({
                 {resolvedOutputDir || "-"}
               </div>
             </div>
+            <div className="rounded-2xl bg-slate-50 p-4">
+              <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                {labels.smtp_coverage_percent}
+              </div>
+              <div className="mt-2 text-xl font-extrabold text-slate-900">
+                {smtpCoveragePercent.toFixed(1)}%
+              </div>
+              <div className="mt-1 text-xs font-semibold text-slate-500">
+                {formatNumber(stats.smtp_attempted_emails)} / {formatNumber(stats.mx_has_mx)}
+              </div>
+            </div>
             <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800">
-              {stats.mx_inconclusive > 0
-                ? `${labels.mx_inconclusive}: ${formatNumber(stats.mx_inconclusive)}`
-                : `${labels.summaryVerified}: ${formatNumber(verifyDeliverableCount)}`}
+              {labels.reviewNote}
             </div>
           </div>
 
@@ -192,10 +226,10 @@ export function FinalSummary({
               <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                   <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                    {labels.smtpChecked}
+                    {labels.smtp_attempted_emails}
                   </div>
                   <div className="mt-2 text-2xl font-extrabold text-slate-900">
-                    {formatNumber(smtpCheckedCount)}
+                    {formatNumber(stats.smtp_attempted_emails)}
                   </div>
                 </div>
                 <VerifySummaryCard
@@ -223,11 +257,62 @@ export function FinalSummary({
                 />
                 <div className="rounded-2xl bg-slate-50 p-4">
                   <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                    {labels.smtpElapsed}
+                    {labels.smtp_cache_hits}
                   </div>
                   <div className="mt-2 text-xl font-extrabold text-slate-900">
-                    {(stats.smtp_elapsed_ms / 1000).toFixed(2)}s
+                    {formatNumber(stats.smtp_cache_hits)}
                   </div>
+                  <div className="mt-1 text-xs font-semibold text-slate-500">
+                    {labels.cacheCoverage(stats.smtp_cache_hits, stats.smtp_attempted_emails)}
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                  {labels.smtp_unknown_breakdown}
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
+                  <VerifySummaryCard
+                    bucket="smtp_policy_blocked"
+                    label={labels.smtp_policy_blocked}
+                    value={formatNumber(stats.smtp_policy_blocked)}
+                  />
+                  <VerifySummaryCard
+                    bucket="smtp_temp_failure"
+                    label={labels.smtp_temp_failure}
+                    value={formatNumber(stats.smtp_temp_failure)}
+                  />
+                  <VerifySummaryCard
+                    bucket="smtp_mailbox_full"
+                    label={labels.smtp_mailbox_full}
+                    value={formatNumber(stats.smtp_mailbox_full)}
+                  />
+                  <VerifySummaryCard
+                    bucket="smtp_mailbox_disabled"
+                    label={labels.smtp_mailbox_disabled}
+                    value={formatNumber(stats.smtp_mailbox_disabled)}
+                  />
+                  <VerifySummaryCard
+                    bucket="mx_inconclusive"
+                    label={labels.mx_inconclusive}
+                    value={formatNumber(stats.mx_inconclusive)}
+                  />
+                  <VerifySummaryCard
+                    bucket="mx_typo"
+                    label={labels.mx_typo}
+                    value={formatNumber(stats.mx_typo)}
+                  />
+                  <VerifySummaryCard
+                    bucket="mx_disposable"
+                    label={labels.mx_disposable}
+                    value={formatNumber(stats.mx_disposable)}
+                  />
+                  <VerifySummaryCard
+                    bucket="mx_parked"
+                    label={labels.mx_parked}
+                    value={formatNumber(stats.mx_parked)}
+                  />
                 </div>
               </div>
             </>
