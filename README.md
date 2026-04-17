@@ -101,13 +101,17 @@ The application automatically creates neatly categorized files in your selected 
 11_dns_mx_hop_le__has_mx.txt
 15_dns_parked.txt
 20_smtp_gui_duoc__deliverable.txt
+30_T4_FINAL_Alive.txt
+31_T4_FINAL_Dead.txt
+32_T4_FINAL_Unknown.txt
+33_T4_FINAL_Detail.csv
 ```
 
 ## 📊 Verification Evaluation
 
 To score verify quality without changing backend logic, use the evaluation workflow in:
 
-- [docs/verify-evaluation.md](/Users/sangspm/Documents/FilterEmail/docs/verify-evaluation.md)
+- [docs/verify-evaluation.md](docs/verify-evaluation.md)
 
 It measures:
 
