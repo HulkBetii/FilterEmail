@@ -1,4 +1,4 @@
-#[path = "../processor.rs"]
+#[path = "../processor/mod.rs"]
 mod processor;
 #[path = "../smtp_client.rs"]
 mod smtp_client;

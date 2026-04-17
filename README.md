@@ -141,6 +141,30 @@ Main VPS files:
 - `verify-vps/src/cache.rs`
 - `verify-vps/src/rate_limiter.rs`
 
+## Repository Layout
+
+The repository is organized by responsibility:
+
+```text
+.
+|-- src/                     # React frontend
+|-- src-tauri/               # Tauri desktop backend
+|-- verify-vps/              # Optional SMTP verification service
+|-- docs/
+|   |-- architecture/        # Structure and architecture notes
+|   |-- operations/          # Runbooks and evaluation workflows
+|   |-- plans/               # Implementation plans and planning notes
+|   `-- prompts/             # Long-form prompts/spec references
+`-- scripts/
+    |-- eval/                # Utility scripts used by the documented workflow
+    |-- experiments/         # One-off simulations and exploratory scripts
+    `-- patches/             # Internal patch/rewrite helpers, not runtime code
+```
+
+Detailed conventions live in:
+
+- [docs/architecture/repo-layout.md](docs/architecture/repo-layout.md)
+
 ## Key Features
 
 - Streaming file processing with flat memory usage
@@ -275,13 +299,13 @@ The desktop backend also exposes a `check_port_25` command to test whether outbo
 
 To measure verify quality without changing backend logic, use:
 
-- [docs/verify-evaluation.md](docs/verify-evaluation.md)
+- [docs/operations/verify-evaluation.md](docs/operations/verify-evaluation.md)
 
 The helper script:
 
 ```bash
-python3 tools/verify_eval.py prepare /path/to/33_T4_FINAL_Detail.csv /path/to/verify_review.csv
-python3 tools/verify_eval.py score /path/to/verify_review.csv
+python3 scripts/eval/verify_eval.py prepare /path/to/33_T4_FINAL_Detail.csv /path/to/verify_review.csv
+python3 scripts/eval/verify_eval.py score /path/to/verify_review.csv
 ```
 
 This workflow tracks:

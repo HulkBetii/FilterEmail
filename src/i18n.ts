@@ -130,6 +130,8 @@ type TranslationShape = {
   };
 };
 
+export type TranslationLabels = TranslationShape["labels"];
+
 export const translations = {
   en: {
     idleBanner:

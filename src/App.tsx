@@ -1,1222 +1,136 @@
-import { useEffect, useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import {
-  isPermissionGranted,
-  requestPermission,
-  sendNotification,
-} from "@tauri-apps/plugin-notification";
-import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
-import {
-  AlertCircle,
-  CheckCircle,
-  ChevronDown,
-  ChevronUp,
-  Clock,
-  Copy,
-  FileSpreadsheet,
-  FolderOpen,
-  History,
-  LoaderCircle,
-  Mail,
-  SearchCheck,
-  ShieldCheck,
-  Target,
-  Trash2,
-  CloudUpload,
-  Users,
-  XCircle,
-} from "lucide-react";
-import appLogo from "./assets/logo.png";
+import { AlertCircle, CheckCircle } from "lucide-react";
+import { AppHeader } from "./components/app-header";
 import { HistoryModal } from "./components/history-modal";
+import { ResultsPanel } from "./components/results-panel";
+import { SettingsPanel } from "./components/settings-panel";
 import { TopDashboard } from "./components/top-dashboard";
-import {
-  VerifyHeroCard,
-  VerifySummaryCard,
-  type VerifyBucketKey,
-} from "./components/verify-ui";
-import {
-  formatBackendError,
-  getSavedLanguage,
-  persistLanguage,
-  translations,
-  type ErrorPayload,
-  type Language,
-} from "./i18n";
-
-type ProcessingPayload = {
-  processed_lines: number;
-  progress_percent: number;
-  invalid: number;
-  public: number;
-  edu: number;
-  targeted: number;
-  custom: number;
-  duplicates: number;
-  mx_dead: number;
-  mx_has_mx: number;
-  mx_a_fallback: number;
-  mx_inconclusive: number;
-  mx_parked: number;
-  mx_disposable: number;
-  mx_typo: number;
-  smtp_deliverable: number;
-  smtp_rejected: number;
-  smtp_catchall: number;
-  smtp_unknown: number;
-  smtp_enabled: boolean;
-  smtp_elapsed_ms: number;
-  cache_hits: number;
-  final_alive: number;
-  final_dead: number;
-  final_unknown: number;
-  smtp_attempted_emails: number;
-  smtp_cache_hits: number;
-  smtp_coverage_percent: number;
-  smtp_policy_blocked: number;
-  smtp_temp_failure: number;
-  smtp_mailbox_full: number;
-  smtp_mailbox_disabled: number;
-  smtp_bad_mailbox: number;
-  smtp_bad_domain: number;
-  smtp_network_error: number;
-  smtp_protocol_error: number;
-  smtp_timeout: number;
-  elapsed_ms: number;
-  output_dir?: string;
-  current_domain?: string | null;
-  current_email?: string | null;
-};
-
-type BannerState =
-  | { tone: "idle"; message: string }
-  | { tone: "success"; message: string }
-  | { tone: "error"; message: string };
-
-type HistoryEntry = {
-  id: string;
-  timestamp: number;
-  fileNames: string[];
-  mode: "filter" | "verify";
-  stats: ProcessingPayload;
-};
-
-const initialStats: ProcessingPayload = {
-  processed_lines: 0,
-  progress_percent: 0,
-  invalid: 0,
-  public: 0,
-  edu: 0,
-  targeted: 0,
-  custom: 0,
-  duplicates: 0,
-  mx_dead: 0,
-  mx_has_mx: 0,
-  mx_a_fallback: 0,
-  mx_inconclusive: 0,
-  mx_parked: 0,
-  mx_disposable: 0,
-  mx_typo: 0,
-  smtp_deliverable: 0,
-  smtp_rejected: 0,
-  smtp_catchall: 0,
-  smtp_unknown: 0,
-  smtp_enabled: false,
-  smtp_elapsed_ms: 0,
-  cache_hits: 0,
-  final_alive: 0,
-  final_dead: 0,
-  final_unknown: 0,
-  smtp_attempted_emails: 0,
-  smtp_cache_hits: 0,
-  smtp_coverage_percent: 0,
-  smtp_policy_blocked: 0,
-  smtp_temp_failure: 0,
-  smtp_mailbox_full: 0,
-  smtp_mailbox_disabled: 0,
-  smtp_bad_mailbox: 0,
-  smtp_bad_domain: 0,
-  smtp_network_error: 0,
-  smtp_protocol_error: 0,
-  smtp_timeout: 0,
-  elapsed_ms: 0,
-  current_domain: null,
-  current_email: null,
-};
-
-const DEFAULT_TIMEOUT_MS = 1500;
-const DEFAULT_MAX_CONCURRENT = 40;
-
-const statCards = [
-  {
-    key: "invalid" as const,
-    icon: XCircle,
-    chip: "bg-red-50 text-red-700 ring-red-100",
-  },
-  {
-    key: "public" as const,
-    icon: Users,
-    chip: "bg-blue-50 text-blue-700 ring-blue-100",
-  },
-  {
-    key: "edu" as const,
-    icon: ShieldCheck,
-    chip: "bg-emerald-50 text-emerald-700 ring-emerald-100",
-  },
-  {
-    key: "targeted" as const,
-    icon: Target,
-    chip: "bg-fuchsia-50 text-fuchsia-700 ring-fuchsia-100",
-  },
-  {
-    key: "custom" as const,
-    icon: Mail,
-    chip: "bg-amber-50 text-amber-700 ring-amber-100",
-  },
-  {
-    key: "duplicates" as const,
-    icon: Copy,
-    chip: "bg-slate-50 text-slate-700 ring-slate-200",
-  },
-  {
-    key: "mx_disposable" as const,
-    icon: Trash2,
-    chip: "bg-orange-50 text-orange-700 ring-orange-100",
-  },
-  {
-    key: "mx_has_mx" as const,
-    icon: CheckCircle,
-    chip: "bg-emerald-50 text-emerald-700 ring-emerald-100",
-  },
-  {
-    key: "mx_a_fallback" as const,
-    icon: FolderOpen,
-    chip: "bg-cyan-50 text-cyan-700 ring-cyan-100",
-  },
-  {
-    key: "mx_typo" as const,
-    icon: SearchCheck,
-    chip: "bg-violet-50 text-violet-700 ring-violet-100",
-  },
-  {
-    key: "mx_parked" as const,
-    icon: AlertCircle,
-    chip: "bg-amber-50 text-amber-700 ring-amber-100",
-  },
-];
-
-function basename(path: string) {
-  return path.split(/[\\/]/).pop() ?? path;
-}
-
-function normalizeStats(value: Partial<ProcessingPayload> | null | undefined): ProcessingPayload {
-  return {
-    ...initialStats,
-    ...value,
-    output_dir: value?.output_dir,
-    current_domain: value?.current_domain ?? null,
-    current_email: value?.current_email ?? null,
-  };
-}
-
-function formatLocaleNumber(value: number, language: Language) {
-  return value.toLocaleString(language === "vi" ? "vi-VN" : "en-US");
-}
-
-function isVerifyStats(stats: ProcessingPayload) {
-  return (
-    stats.mx_dead > 0 ||
-    stats.mx_has_mx > 0 ||
-    stats.mx_a_fallback > 0 ||
-    stats.mx_inconclusive > 0 ||
-    stats.mx_parked > 0 ||
-    stats.mx_disposable > 0 ||
-    stats.mx_typo > 0 ||
-    stats.smtp_enabled ||
-    stats.smtp_deliverable > 0 ||
-    stats.smtp_rejected > 0 ||
-    stats.smtp_catchall > 0 ||
-    stats.smtp_unknown > 0 ||
-    stats.cache_hits > 0 ||
-    stats.final_alive > 0 ||
-    stats.final_dead > 0 ||
-    stats.final_unknown > 0
-  );
-}
+import { useProcessingController } from "./hooks/use-processing-controller";
+import { STAT_CARDS } from "./lib/stat-cards";
 
 export default function App() {
-  const [language, setLanguage] = useState<Language>(getSavedLanguage);
-  const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
-  const [timeoutMs, setTimeoutMs] = useState(DEFAULT_TIMEOUT_MS);
-  const [maxConcurrent, setMaxConcurrent] = useState(DEFAULT_MAX_CONCURRENT);
-  const [usePersistentCache, setUsePersistentCache] = useState(false);
-  const [showAdvancedDns, setShowAdvancedDns] = useState(false);
-  const [smtpEnabled, setSmtpEnabled] = useState(false);
-  const [vpsApiUrl, setVpsApiUrl] = useState("");
-  const [vpsApiKey, setVpsApiKey] = useState("");
-  const [showSmtpDiag, setShowSmtpDiag] = useState(false);
-  const [showDnsDiag, setShowDnsDiag] = useState(false);
-
-  const [history, setHistory] = useState<HistoryEntry[]>([]);
-  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
-  const [outputDir, setOutputDir] = useState("");
-  const [targetDomains, setTargetDomains] = useState("");
-  const [lastOutputDir, setLastOutputDir] = useState("");
-  const [dragActive, setDragActive] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [stats, setStats] = useState<ProcessingPayload>(initialStats);
-  const t = translations[language];
-  const [banner, setBanner] = useState<BannerState>({
-    tone: "idle",
-    message: translations.en.idleBanner,
-  });
-  const [activeTab, setActiveTab] = useState<"filter" | "verify">("filter");
-  const verifyMode = activeTab === "verify";
-
-  useEffect(() => {
-    const saved = localStorage.getItem("filteremail-history");
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved) as Array<Partial<HistoryEntry>>;
-        setHistory(
-          parsed.map((entry) => ({
-            id: entry.id ?? crypto.randomUUID(),
-            timestamp: entry.timestamp ?? Date.now(),
-            fileNames: entry.fileNames ?? [],
-            mode:
-              entry.mode === "filter" || entry.mode === "verify"
-                ? entry.mode
-                : isVerifyStats(normalizeStats(entry.stats))
-                  ? "verify"
-                  : "filter",
-            stats: normalizeStats(entry.stats),
-          })),
-        );
-      } catch {
-        setHistory([]);
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    const savedDomains = localStorage.getItem("targetDomains");
-    if (savedDomains) setTargetDomains(savedDomains);
-    const savedMx = localStorage.getItem("checkMx");
-    if (savedMx) { /* legacy: tab state now drives check_mx */ }
-    const savedOut = localStorage.getItem("lastOutputDir");
-    if (savedOut) {
-      setOutputDir(savedOut);
-      setLastOutputDir(savedOut);
-    }
-    const savedTimeout = Number(localStorage.getItem("deepDnsTimeoutMs") ?? DEFAULT_TIMEOUT_MS);
-    if (Number.isFinite(savedTimeout) && savedTimeout > 0) {
-      setTimeoutMs(savedTimeout);
-    }
-    const savedConcurrent = Number(
-      localStorage.getItem("deepDnsMaxConcurrent") ?? DEFAULT_MAX_CONCURRENT,
-    );
-    if (Number.isFinite(savedConcurrent) && savedConcurrent > 0) {
-      setMaxConcurrent(savedConcurrent);
-    }
-    const savedPersistentCache = localStorage.getItem("deepDnsPersistentCache");
-    if (savedPersistentCache === "true") {
-      setUsePersistentCache(true);
-    }
-    const savedSmtpEnabled = localStorage.getItem("smtpVerifyEnabled");
-    if (savedSmtpEnabled === "true") {
-      setSmtpEnabled(true);
-    }
-    const savedVpsUrl = localStorage.getItem("smtpVerifyVpsApiUrl");
-    if (savedVpsUrl) {
-      setVpsApiUrl(savedVpsUrl);
-    }
-    const savedVpsKey = localStorage.getItem("smtpVerifyVpsApiKey");
-    if (savedVpsKey) {
-      setVpsApiKey(savedVpsKey);
-    }
-  }, []);
-
-  useEffect(() => {
-    localStorage.setItem("targetDomains", targetDomains);
-  }, [targetDomains]);
-
-  useEffect(() => {
-    localStorage.setItem("deepDnsTimeoutMs", String(timeoutMs));
-  }, [timeoutMs]);
-
-  useEffect(() => {
-    localStorage.setItem("deepDnsMaxConcurrent", String(maxConcurrent));
-  }, [maxConcurrent]);
-
-  useEffect(() => {
-    localStorage.setItem("deepDnsPersistentCache", usePersistentCache ? "true" : "false");
-  }, [usePersistentCache]);
-
-  useEffect(() => {
-    localStorage.setItem("smtpVerifyEnabled", smtpEnabled ? "true" : "false");
-  }, [smtpEnabled]);
-
-  useEffect(() => {
-    localStorage.setItem("smtpVerifyVpsApiUrl", vpsApiUrl);
-  }, [vpsApiUrl]);
-
-  useEffect(() => {
-    localStorage.setItem("smtpVerifyVpsApiKey", vpsApiKey);
-  }, [vpsApiKey]);
-
-  useEffect(() => {
-    if (outputDir) localStorage.setItem("lastOutputDir", outputDir);
-  }, [outputDir]);
-
-  useEffect(() => {
-    persistLanguage(language);
-  }, [language]);
-
-  // Auto-expand diagnostic panels during processing so numbers update visibly in real-time
-  useEffect(() => {
-    if (isProcessing) {
-      setShowDnsDiag(true);
-      setShowSmtpDiag(true);
-    }
-  }, [isProcessing]);
-
-  useEffect(() => {
-    if (isProcessing && stats.processed_lines > 0) {
-      setBanner({
-        tone: "idle",
-        message: t.progressBanner(
-          stats.processed_lines,
-          stats.current_domain ?? stats.current_email,
-        ),
-      });
-      return;
-    }
-
-    if (banner.tone === "success") {
-      setBanner({
-        tone: "success",
-        message: t.completeBanner,
-      });
-      return;
-    }
-
-    if (banner.tone === "idle") {
-      if (selectedFiles.length > 0) {
-        setBanner({
-          tone: "idle",
-          message:
-            selectedFiles.length === 1
-              ? t.selectedFileBanner(basename(selectedFiles[0]))
-              : `Đã chọn ${selectedFiles.length} tệp.`,
-        });
-      } else if (outputDir) {
-        setBanner({
-          tone: "idle",
-          message: t.selectedOutputBanner,
-        });
-      } else {
-        setBanner({
-          tone: "idle",
-          message: t.idleBanner,
-        });
-      }
-    }
-  }, [
-    banner.tone,
-    isProcessing,
-    language,
-    outputDir,
-    selectedFiles,
-    stats.current_domain,
-    stats.current_email,
-    stats.processed_lines,
-    t,
-  ]);
-
-  useEffect(() => {
-    let mounted = true;
-
-    const setupListeners = async () => {
-      const unlistenProgress = await listen<ProcessingPayload>("processing-progress", ({ payload }) => {
-        if (!mounted) return;
-        const normalized = normalizeStats(payload);
-        setStats(normalized);
-        setIsProcessing(true);
-        setBanner({
-          tone: "idle",
-          message: translations[language].progressBanner(
-            normalized.processed_lines,
-            normalized.current_domain ?? normalized.current_email,
-          ),
-        });
-      });
-
-      const unlistenComplete = await listen<ProcessingPayload>("processing-complete", ({ payload }) => {
-        if (!mounted) return;
-        const normalized = normalizeStats(payload);
-        setStats(normalized);
-        setIsProcessing(false);
-        setLastOutputDir(normalized.output_dir ?? "");
-        setBanner({
-          tone: "success",
-          message: translations[language].completeBanner,
-        });
-
-        const newEntry: HistoryEntry = {
-          id: crypto.randomUUID(),
-          timestamp: Date.now(),
-          fileNames: selectedFiles.map((file) => basename(file)),
-          mode: verifyMode ? "verify" : "filter",
-          stats: normalized,
-        };
-
-        setHistory((prev) => {
-          const next = [newEntry, ...prev].slice(0, 20);
-          localStorage.setItem("filteremail-history", JSON.stringify(next));
-          return next;
-        });
-
-        isPermissionGranted().then((granted) => {
-          if (!granted) {
-            requestPermission().then((result) => {
-              if (result === "granted") {
-                sendNotification({ title: "Hoàn tất", body: "Quá trình lọc email đã xong!" });
-              }
-            });
-          } else {
-            sendNotification({ title: "Hoàn tất", body: "Quá trình lọc email đã xong!" });
-          }
-        });
-      });
-
-      const unlistenError = await listen<ErrorPayload>("processing-error", ({ payload }) => {
-        if (!mounted) return;
-        setIsProcessing(false);
-        setBanner({
-          tone: "error",
-          message: formatBackendError(payload, language),
-        });
-      });
-
-      const unlistenDragDrop = await getCurrentWindow().onDragDropEvent((event) => {
-        if (!mounted) return;
-
-        switch (event.payload.type) {
-          case "enter":
-          case "over":
-            setDragActive(true);
-            break;
-          case "leave":
-            setDragActive(false);
-            break;
-          case "drop": {
-            setDragActive(false);
-            const paths = event.payload.paths;
-            if (paths && paths.length > 0) {
-              setSelectedFiles(paths);
-              setBanner({
-                tone: "idle",
-                message:
-                  paths.length === 1
-                    ? translations[language].selectedFileBanner(basename(paths[0]))
-                    : `Đã chọn ${paths.length} tệp.`,
-              });
-            }
-            break;
-          }
-        }
-      });
-
-      return () => {
-        unlistenProgress();
-        unlistenComplete();
-        unlistenError();
-        unlistenDragDrop();
-      };
-    };
-
-    const cleanupPromise = setupListeners();
-
-    return () => {
-      mounted = false;
-      void cleanupPromise.then((cleanup) => cleanup());
-    };
-  }, [language, selectedFiles]);
-
-  const canOpenFolder = Boolean(lastOutputDir || outputDir);
-  const resolvedOutputDir = lastOutputDir || outputDir;
-
-  const totalClassified = useMemo(
-    () =>
-      stats.invalid +
-      stats.public +
-      stats.edu +
-      stats.targeted +
-      stats.custom +
-      stats.duplicates +
-      stats.mx_dead +
-      stats.mx_has_mx +
-      stats.mx_a_fallback +
-      stats.mx_inconclusive +
-      stats.mx_parked +
-      stats.mx_disposable +
-      stats.mx_typo,
-    [stats],
-  );
-  const finalTotal = stats.final_alive + stats.final_dead + stats.final_unknown;
-
-  const smtpCoveragePercent = stats.smtp_coverage_percent;
-
-  const pickInputFile = async () => {
-    const selected = await openDialog({
-      multiple: true,
-      directory: false,
-      filters: [{ name: "Email Lists", extensions: ["txt", "csv"] }],
-    });
-
-    if (typeof selected === "string") {
-      setSelectedFiles([selected]);
-      setBanner({
-        tone: "idle",
-        message: t.selectedFileBanner(basename(selected)),
-      });
-    } else if (Array.isArray(selected)) {
-      setSelectedFiles(selected);
-      setBanner({
-        tone: "idle",
-        message: `Đã chọn ${selected.length} tệp.`,
-      });
-    }
-  };
-
-  const pickOutputDir = async () => {
-    const selected = await openDialog({
-      directory: true,
-      multiple: false,
-    });
-
-    if (typeof selected === "string") {
-      setOutputDir(selected);
-      setLastOutputDir(selected);
-      setBanner({
-        tone: "idle",
-        message: t.selectedOutputBanner,
-      });
-    }
-  };
-
-  const handleProcess = async () => {
-    if (selectedFiles.length === 0 || !outputDir || isProcessing) {
-      return;
-    }
-
-    setIsProcessing(true);
-    setLastOutputDir(outputDir);
-    setStats(initialStats);
-    setBanner({
-      tone: "idle",
-      message: t.preparingBanner,
-    });
-
-    try {
-      await invoke("process_file", {
-        file_paths: selectedFiles,
-        output_dir: outputDir,
-        target_domains: activeTab === "filter" ? targetDomains : "",
-        check_mx: verifyMode,
-        timeout_ms: timeoutMs,
-        max_concurrent: maxConcurrent,
-        use_persistent_cache: usePersistentCache,
-        smtp_enabled: verifyMode ? smtpEnabled : false,
-        vps_api_url: verifyMode ? vpsApiUrl : "",
-        vps_api_key: verifyMode ? vpsApiKey : "",
-      });
-    } catch (error) {
-      console.error("Invoke Error:", error);
-      setIsProcessing(false);
-      setBanner({
-        tone: "error",
-        message:
-          typeof error === "string"
-            ? error
-            : error instanceof Error
-              ? error.message
-              : t.labels.genericBackendError,
-      });
-    }
-  };
-
-  const openResultFolder = async () => {
-    if (!resolvedOutputDir) return;
-    try {
-      await revealItemInDir(resolvedOutputDir);
-    } catch (error) {
-      console.error(error);
-      await openPath(resolvedOutputDir).catch(console.error);
-    }
-  };
+  const controller = useProcessingController();
 
   return (
     <main className="min-h-screen bg-slate-50 font-sans text-slate-900">
       <div className="mx-auto w-full max-w-7xl space-y-5 p-4 sm:p-6 lg:p-8">
-        <header className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-white px-5 py-3 shadow-sm ring-1 ring-slate-900/5">
-          <div className="flex min-w-0 items-center gap-3">
-            <img
-              src={appLogo}
-              alt="FilterEmail logo"
-              className="h-12 w-12 shrink-0 rounded-2xl object-cover shadow-md shadow-sky-500/20 ring-1 ring-sky-100"
-            />
-            <div className="min-w-0">
-              <p className="truncate text-base font-bold leading-tight text-slate-800">FilterEmail Desktop</p>
-              <p className="truncate text-[11px] font-medium text-slate-400">{t.labels.heroBadge}</p>
-            </div>
-          </div>
+        <AppHeader
+          activeTab={controller.activeTab}
+          language={controller.language}
+          labels={controller.t.labels}
+          onChangeLanguage={controller.setLanguage}
+          onChangeTab={controller.setActiveTab}
+          onOpenHistory={() => controller.setIsHistoryOpen(true)}
+        />
 
-          {/* ── Tab navigation (centre) ── */}
-          <div className="flex space-x-1 rounded-[1.25rem] bg-slate-100 p-1">
-            <button
-              onClick={() => setActiveTab("filter")}
-              className={`flex items-center gap-1.5 rounded-xl px-5 py-2 text-sm font-semibold transition-all duration-200 ${
-                activeTab === "filter"
-                  ? "bg-white text-slate-900 shadow-sm ring-1 ring-slate-900/8"
-                  : "text-slate-500 hover:text-slate-800"
-              }`}
-            >
-              <Mail className="h-3.5 w-3.5 shrink-0" />
-              {t.labels.tabBasicFilter}
-            </button>
-            <button
-              onClick={() => setActiveTab("verify")}
-              className={`flex items-center gap-1.5 rounded-xl px-5 py-2 text-sm font-semibold transition-all duration-200 ${
-                activeTab === "verify"
-                  ? "bg-slate-900 text-white shadow-md shadow-slate-900/20"
-                  : "text-slate-500 hover:text-slate-800"
-              }`}
-            >
-              <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
-              {t.labels.tabDnsVerify}
-            </button>
-          </div>
-
-          <div className="flex shrink-0 items-center gap-2">
-            <button
-              onClick={() => setIsHistoryOpen(true)}
-              className="flex items-center gap-1.5 rounded-full bg-sky-50 px-3 py-1.5 text-xs font-semibold text-sky-700 ring-1 ring-sky-200 transition hover:bg-sky-100"
-            >
-              <History className="h-3.5 w-3.5 shrink-0" />
-              <span>{t.labels.openHistory}</span>
-            </button>
-            <div className="flex rounded-full bg-slate-100 p-1">
-              {(["en", "vi"] as const).map((lang) => (
-                <button
-                  key={lang}
-                  onClick={() => setLanguage(lang)}
-                  className={`rounded-full px-3 py-1 text-xs font-bold transition ${
-                    language === lang
-                      ? "bg-white text-slate-900 shadow-sm ring-1 ring-slate-900/10"
-                      : "text-slate-500 hover:text-slate-700"
-                  }`}
-                >
-                  {lang === "en" ? t.labels.english : t.labels.vietnamese}
-                </button>
-              ))}
-            </div>
-          </div>
-        </header>
-
-        {banner.tone !== "idle" && (
+        {controller.banner.tone !== "idle" && (
           <div
             className={`flex min-w-0 items-start gap-3 rounded-2xl border p-4 text-sm font-medium ${
-              banner.tone === "error"
+              controller.banner.tone === "error"
                 ? "border-red-200 bg-red-50 text-red-800"
                 : "border-emerald-200 bg-emerald-50 text-emerald-800"
             }`}
           >
-            {banner.tone === "error" ? (
+            {controller.banner.tone === "error" ? (
               <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
             ) : (
               <CheckCircle className="mt-0.5 h-5 w-5 shrink-0" />
             )}
-            <p className="min-w-0 break-words leading-relaxed">{banner.message}</p>
+            <p className="min-w-0 break-words leading-relaxed">
+              {controller.banner.message}
+            </p>
           </div>
         )}
 
         <TopDashboard
-          activeTab={activeTab}
-          language={language}
-          dragActive={dragActive}
-          totalClassified={verifyMode ? finalTotal : totalClassified}
-          progressPercent={stats.progress_percent}
-          isProcessing={isProcessing}
-          currentDomain={stats.current_domain ?? null}
-          currentEmail={stats.current_email ?? null}
-          cacheHits={stats.cache_hits}
-          labels={t.labels}
-          canOpenFolder={canOpenFolder}
-          onPickInputFile={pickInputFile}
-          onOpenResultFolder={openResultFolder}
+          activeTab={controller.activeTab}
+          language={controller.language}
+          dragActive={controller.dragActive}
+          totalClassified={
+            controller.verifyMode
+              ? controller.finalTotal
+              : controller.totalClassified
+          }
+          progressPercent={controller.stats.progress_percent}
+          isProcessing={controller.isProcessing}
+          currentDomain={controller.stats.current_domain ?? null}
+          currentEmail={controller.stats.current_email ?? null}
+          cacheHits={controller.stats.cache_hits}
+          labels={controller.t.labels}
+          canOpenFolder={controller.canOpenFolder}
+          onPickInputFile={controller.pickInputFile}
+          onOpenResultFolder={controller.openResultFolder}
           onDragOver={(event) => {
             event.preventDefault();
-            setDragActive(true);
+            controller.setDragActive(true);
           }}
-          onDragLeave={() => setDragActive(false)}
-          formatNumber={(value) => formatLocaleNumber(value, language)}
+          onDragLeave={() => controller.setDragActive(false)}
+          formatNumber={controller.formatNumber}
         />
 
         <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
-          <div className="flex flex-col gap-4 lg:col-span-5">
-            <div className="flex-1 rounded-3xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
-              <div className="space-y-4">
-                <div>
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400">{t.labels.selectedFile}</label>
-                  <div className="mt-1.5 flex min-w-0 items-center gap-2 rounded-2xl bg-slate-50 px-3 py-2.5 ring-1 ring-slate-100">
-                    <FileSpreadsheet className="h-4 w-4 shrink-0 text-slate-400" />
-                    <span className="min-w-0 flex-1 truncate text-sm font-medium text-slate-700">
-                      {selectedFiles.length > 0
-                        ? selectedFiles.length === 1
-                          ? basename(selectedFiles[0])
-                          : `${selectedFiles.length} ${language === "vi" ? "tệp" : "files"}`
-                        : t.labels.noFile}
-                    </span>
-                  </div>
-                </div>
+          <SettingsPanel
+            activeTab={controller.activeTab}
+            isProcessing={controller.isProcessing}
+            labels={controller.t.labels}
+            language={controller.language}
+            outputDir={controller.outputDir}
+            selectedFiles={controller.selectedFiles}
+            showAdvancedDns={controller.showAdvancedDns}
+            smtpEnabled={controller.smtpEnabled}
+            stats={controller.stats}
+            targetDomains={controller.targetDomains}
+            timeoutMs={controller.timeoutMs}
+            maxConcurrent={controller.maxConcurrent}
+            usePersistentCache={controller.usePersistentCache}
+            vpsApiKey={controller.vpsApiKey}
+            vpsApiUrl={controller.vpsApiUrl}
+            onChangeMaxConcurrent={controller.setMaxConcurrent}
+            onChangeTargetDomains={controller.setTargetDomains}
+            onChangeTimeoutMs={controller.setTimeoutMs}
+            onChangeVpsApiKey={controller.setVpsApiKey}
+            onChangeVpsApiUrl={controller.setVpsApiUrl}
+            onPickOutputDir={controller.pickOutputDir}
+            onStartProcessing={controller.handleProcess}
+            onToggleAdvancedDns={() =>
+              controller.setShowAdvancedDns(!controller.showAdvancedDns)
+            }
+            onTogglePersistentCache={() =>
+              controller.setUsePersistentCache(!controller.usePersistentCache)
+            }
+            onToggleSmtpEnabled={() =>
+              controller.setSmtpEnabled(!controller.smtpEnabled)
+            }
+          />
 
-                <div>
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400">{t.labels.outputFolder}</label>
-                  <div className="mt-1.5 flex min-w-0 items-center gap-2">
-                    <div className="flex min-w-0 flex-1 items-center gap-2 rounded-2xl bg-slate-50 px-3 py-2.5 ring-1 ring-slate-100">
-                      <FolderOpen className="h-4 w-4 shrink-0 text-slate-400" />
-                      <span className="min-w-0 flex-1 truncate text-sm font-medium text-slate-600">
-                        {outputDir || t.labels.noFolder}
-                      </span>
-                    </div>
-                    <button
-                      onClick={pickOutputDir}
-                      className="shrink-0 rounded-2xl bg-slate-100 px-3 py-2.5 text-sm font-bold text-slate-700 transition hover:bg-slate-200"
-                    >
-                      {t.labels.selectFolder}
-                    </button>
-                  </div>
-                </div>
-
-                {activeTab === "filter" && (
-                  <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
-                    <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                      {t.labels.targetedInputLabel}
-                    </label>
-                    <textarea
-                      rows={3}
-                      value={targetDomains}
-                      onChange={(event) => setTargetDomains(event.target.value)}
-                      placeholder={t.labels.targetedInputPlaceholder}
-                      className="mt-1.5 w-full resize-none rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-900 ring-1 ring-slate-100 transition placeholder-slate-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-400/60"
-                    />
-                    <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
-                      {language === "vi" ? "Mỗi dòng một domain, hoặc phân cách bằng dấu phẩy." : "One domain per line, or separated by commas."}
-                    </p>
-                  </div>
-                )}
-
-                {activeTab === "verify" && (
-                  <div className="animate-in fade-in slide-in-from-bottom-2 flex flex-col gap-4 duration-300">
-
-                    {/* ── Section A: DNS Config ── */}
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50/50 p-4">
-                      <div className="mb-3 flex items-center justify-between">
-                        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                          {language === "vi" ? "⚙️ Cấu hình DNS" : "⚙️ DNS Config"}
-                        </p>
-                        <button
-                          onClick={() => setShowAdvancedDns(!showAdvancedDns)}
-                          className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-bold text-slate-500 transition-colors hover:bg-slate-200 hover:text-slate-800"
-                        >
-                          {language === "vi" ? "Nâng cao" : "Advanced"}
-                          {showAdvancedDns ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-                        </button>
-                      </div>
-
-                      {showAdvancedDns && (
-                        <div className="mb-3 grid animate-in fade-in slide-in-from-top-2 grid-cols-1 gap-3 px-1 sm:grid-cols-2">
-                          <div>
-                            <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                              {t.labels.timeoutLabel}
-                            </label>
-                            <input
-                              type="number"
-                              min={250}
-                              max={5000}
-                              step={50}
-                              value={timeoutMs}
-                              onChange={(event) =>
-                                setTimeoutMs(
-                                  Math.max(
-                                    250,
-                                    Math.min(5000, Number(event.target.value) || DEFAULT_TIMEOUT_MS),
-                                  ),
-                                )
-                              }
-                              className="mt-1.5 w-full rounded-2xl bg-white px-3 py-2.5 text-sm text-slate-900 ring-1 ring-slate-200 transition focus:outline-none focus:ring-2 focus:ring-sky-400/60"
-                            />
-                            <p className="mt-1 text-[11px] leading-relaxed text-slate-400">{t.labels.timeoutHint}</p>
-                          </div>
-                          <div>
-                            <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                              {t.labels.concurrencyLabel}
-                            </label>
-                            <input
-                              type="number"
-                              min={1}
-                              max={50}
-                              step={1}
-                              value={maxConcurrent}
-                              onChange={(event) =>
-                                setMaxConcurrent(
-                                  Math.max(
-                                    1,
-                                    Math.min(50, Number(event.target.value) || DEFAULT_MAX_CONCURRENT),
-                                  ),
-                                )
-                              }
-                              className="mt-1.5 w-full rounded-2xl bg-white px-3 py-2.5 text-sm text-slate-900 ring-1 ring-slate-200 transition focus:outline-none focus:ring-2 focus:ring-sky-400/60"
-                            />
-                            <p className="mt-1 text-[11px] leading-relaxed text-slate-400">{t.labels.concurrencyHint}</p>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Persistent Cache toggle */}
-                      <label
-                        className="mt-3 flex cursor-pointer items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2.5 transition hover:bg-slate-50"
-                        onClick={() => setUsePersistentCache((v) => !v)}
-                      >
-                        <div className="min-w-0">
-                          <span className="text-sm font-semibold text-slate-700">{t.labels.persistentCacheLabel}</span>
-                          <p className="mt-0.5 text-[11px] leading-relaxed text-slate-400">{t.labels.persistentCacheHint}</p>
-                        </div>
-                        <div className="relative shrink-0">
-                          <div className={`h-5 w-9 rounded-full transition-colors ${usePersistentCache ? "bg-sky-500" : "bg-slate-300"}`} />
-                          <div className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${usePersistentCache ? "translate-x-4" : "translate-x-0"}`} />
-                        </div>
-                      </label>
-
-                      {/* Cache hit badge */}
-                      {usePersistentCache && stats.cache_hits > 0 && (
-                        <div className="mt-2 flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">
-                          <CheckCircle className="h-3.5 w-3.5 shrink-0" />
-                          {t.labels.cacheStatus(stats.cache_hits)}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* ── Section B: SMTP Verify ── */}
-                    <div className="rounded-2xl border border-violet-200 bg-gradient-to-br from-violet-50 to-indigo-50 p-4">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <p className="text-[10px] font-bold uppercase tracking-widest text-violet-600">
-                              {language === "vi" ? "📧 Xác Minh SMTP (VPS)" : "📧 SMTP Verify (VPS)"}
-                            </p>
-                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
-                              smtpEnabled
-                                ? vpsApiUrl && vpsApiKey
-                                  ? "bg-emerald-100 text-emerald-700"
-                                  : "bg-amber-100 text-amber-700"
-                                : "bg-slate-200 text-slate-500"
-                            }`}>
-                              {smtpEnabled
-                                ? vpsApiUrl && vpsApiKey
-                                  ? (language === "vi" ? "Đã cấu hình" : "Configured")
-                                  : (language === "vi" ? "Cần cấu hình" : "Needs setup")
-                                : "OFF"}
-                            </span>
-                          </div>
-                          <p className="mt-1 text-[11px] leading-relaxed text-violet-700/70">{t.labels.smtpVerifyHint}</p>
-                        </div>
-                        <button
-                          onClick={() => setSmtpEnabled(!smtpEnabled)}
-                          className={`mt-1 flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
-                            smtpEnabled ? "bg-violet-600" : "bg-slate-300"
-                          }`}
-                        >
-                          <span className={`mx-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
-                            smtpEnabled ? "translate-x-5" : "translate-x-0"
-                          }`} />
-                        </button>
-                      </div>
-
-                      {smtpEnabled && (
-                        <div className="mt-3 flex flex-col gap-3">
-                          <div>
-                            <label className="text-[10px] font-bold uppercase tracking-widest text-violet-600">{t.labels.vpsApiUrlLabel}</label>
-                            <input
-                              type="url"
-                              value={vpsApiUrl}
-                              onChange={(event) => setVpsApiUrl(event.target.value)}
-                              placeholder={t.labels.vpsApiUrlPlaceholder}
-                              className="mt-1.5 w-full rounded-2xl bg-white px-3 py-2.5 text-sm text-slate-900 ring-1 ring-violet-200 transition placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-400/60"
-                            />
-                          </div>
-                          <div>
-                            <label className="text-[10px] font-bold uppercase tracking-widest text-violet-600">{t.labels.vpsApiKeyLabel}</label>
-                            <input
-                              type="password"
-                              value={vpsApiKey}
-                              onChange={(event) => setVpsApiKey(event.target.value)}
-                              placeholder={t.labels.vpsApiKeyPlaceholder}
-                              className="mt-1.5 w-full rounded-2xl bg-white px-3 py-2.5 text-sm text-slate-900 ring-1 ring-violet-200 transition placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-400/60"
-                            />
-                          </div>
-                          {stats.smtp_elapsed_ms > 0 && (
-                            <div className="flex items-center gap-1.5 rounded-xl border border-violet-200 bg-white/60 px-3 py-2 text-xs font-semibold text-violet-700">
-                              <Clock className="h-3.5 w-3.5 shrink-0" />
-                              {t.labels.smtpElapsed}: {(stats.smtp_elapsed_ms / 1000).toFixed(1)}s
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-
-
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <button
-              onClick={handleProcess}
-              disabled={selectedFiles.length === 0 || !outputDir || isProcessing}
-              className={`group flex h-14 w-full items-center justify-center gap-2.5 rounded-2xl font-bold text-white shadow-lg transition active:scale-[.98] disabled:pointer-events-none disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none ${
-                verifyMode
-                  ? "bg-violet-600 shadow-violet-600/30 hover:bg-violet-500"
-                  : "bg-blue-600 shadow-blue-600/30 hover:bg-blue-500"
-              }`}
-            >
-              {isProcessing ? (
-                <>
-                  <LoaderCircle className="h-5 w-5 animate-spin" />
-                  <span>{t.labels.processing}</span>
-                </>
-              ) : (
-                <>
-                  {verifyMode ? <ShieldCheck className="h-5 w-5 transition-transform group-hover:scale-110" /> : <Mail className="h-5 w-5 transition-transform group-hover:-rotate-12" />}
-                  <span>{verifyMode ? (language === "vi" ? "Bắt đầu Xác Minh DNS" : "Start DNS Verify") : (language === "vi" ? "Bắt đầu Lọc" : "Start Filtering")}</span>
-                </>
-              )}
-            </button>
-
-            {/* Duplicate scanning removed — shown in TopDashboard */}
-          </div>
-
-          <div className="space-y-3 lg:col-span-7">
-            {verifyMode && (
-              <>
-              {/* Tầng 1: Final Hero Cards — only when data exists */}
-              {stats.processed_lines > 0 && (
-                <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
-                  <VerifyHeroCard
-                    bucket="final_alive"
-                    label={t.labels.final_alive}
-                    value={formatLocaleNumber(stats.final_alive, language)}
-                    fileName="30_T4_FINAL_Alive.txt"
-                  />
-                  <VerifyHeroCard
-                    bucket="final_dead"
-                    label={t.labels.final_dead}
-                    value={formatLocaleNumber(stats.final_dead, language)}
-                    fileName="31_T4_FINAL_Dead.txt"
-                  />
-                  <VerifyHeroCard
-                    bucket="final_unknown"
-                    label={t.labels.final_unknown}
-                    value={formatLocaleNumber(stats.final_unknown, language)}
-                    fileName="32_T4_FINAL_Unknown.txt"
-                  />
-                </div>
-              )}
-
-              {/* Fix #6: smtp_alive_note only when SMTP actually enabled */}
-              {stats.smtp_enabled && stats.processed_lines > 0 && (
-                <div className="mb-4 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm font-medium text-sky-900">
-                  {t.labels.smtp_alive_note}
-                </div>
-              )}
-
-              {/* Fix #4+5: React-state-driven accordion — only when data exists */}
-              {stats.smtp_enabled && stats.processed_lines > 0 && (
-                <div className="mb-4 rounded-3xl border border-violet-200 bg-white shadow-sm">
-                  <button
-                    onClick={() => setShowSmtpDiag((v) => !v)}
-                    className="flex w-full cursor-pointer items-center justify-between p-5 text-left"
-                  >
-                    <div className="flex flex-col gap-1.5">
-                      <h3 className="text-base font-extrabold text-slate-900">
-                        {language === "vi" ? "T3: Phân Tích Lỗi SMTP" : "T3: SMTP Diagnostics"}
-                      </h3>
-                      <p className="text-xs font-medium text-slate-500">
-                        {formatLocaleNumber(stats.smtp_attempted_emails, language)} attempted
-                        {" "}•{" "}{stats.smtp_coverage_percent.toFixed(1)}% coverage
-                        {" "}•{" "}{formatLocaleNumber(stats.smtp_cache_hits, language)} cached
-                      </p>
-                    </div>
-                    <div className={`flex items-center justify-center rounded-full bg-violet-100 p-2 text-violet-600 transition-transform duration-300 ${showSmtpDiag ? "rotate-180" : "rotate-0"}`}>
-                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
-                    </div>
-                  </button>
-                  <div className={`overflow-hidden transition-all duration-300 ease-in-out ${showSmtpDiag ? "max-h-[600px] opacity-100" : "max-h-0 opacity-0"}`}>
-                    <div className="border-t border-violet-100 p-5">
-                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                        <VerifySummaryCard bucket="smtp_deliverable" label={t.labels.smtp_deliverable} value={formatLocaleNumber(stats.smtp_deliverable, language)} />
-                        <VerifySummaryCard bucket="smtp_catchall" label={t.labels.smtp_catchall} value={formatLocaleNumber(stats.smtp_catchall, language)} />
-                        <VerifySummaryCard bucket="smtp_policy_blocked" label={t.labels.smtp_policy_blocked} value={formatLocaleNumber(stats.smtp_policy_blocked, language)} />
-                        <VerifySummaryCard bucket="smtp_bad_mailbox" label={t.labels.smtp_bad_mailbox} value={formatLocaleNumber(stats.smtp_bad_mailbox, language)} />
-                        <VerifySummaryCard bucket="smtp_bad_domain" label={t.labels.smtp_bad_domain} value={formatLocaleNumber(stats.smtp_bad_domain, language)} />
-                        <VerifySummaryCard bucket="smtp_mailbox_full" label={t.labels.smtp_mailbox_full} value={formatLocaleNumber(stats.smtp_mailbox_full, language)} />
-                        <VerifySummaryCard bucket="smtp_mailbox_disabled" label={t.labels.smtp_mailbox_disabled} value={formatLocaleNumber(stats.smtp_mailbox_disabled, language)} />
-                        <VerifySummaryCard bucket="smtp_temp_failure" label={t.labels.smtp_temp_failure} value={formatLocaleNumber(stats.smtp_temp_failure, language)} />
-                        <VerifySummaryCard bucket="smtp_network_error" label={t.labels.smtp_network_error} value={formatLocaleNumber(stats.smtp_network_error, language)} />
-                        <VerifySummaryCard bucket="smtp_protocol_error" label={t.labels.smtp_protocol_error} value={formatLocaleNumber(stats.smtp_protocol_error, language)} />
-                        <VerifySummaryCard bucket="smtp_timeout" label={t.labels.smtp_timeout} value={formatLocaleNumber(stats.smtp_timeout, language)} />
-                        <VerifySummaryCard bucket="smtp_unknown" label={t.labels.smtp_unknown} value={formatLocaleNumber(stats.smtp_unknown, language)} />
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Fix #4+5: React-state-driven DNS accordion — only when data exists */}
-              {stats.processed_lines > 0 && (
-                <div className="mb-4 rounded-3xl border border-slate-200 bg-white shadow-sm">
-                  <button
-                    onClick={() => setShowDnsDiag((v) => !v)}
-                    className="flex w-full cursor-pointer items-center justify-between p-5 text-left"
-                  >
-                    <div className="flex flex-col gap-1.5">
-                      <h3 className="text-base font-extrabold text-slate-900">
-                        {language === "vi" ? "T2: Báo Cáo Sức Khỏe DNS" : "T2: DNS Health"}
-                      </h3>
-                      <p className="text-xs font-medium text-slate-500">
-                        {language === "vi"
-                          ? `${formatLocaleNumber(stats.mx_has_mx, language)} domain có MX hợp lệ`
-                          : `${formatLocaleNumber(stats.mx_has_mx, language)} domains with valid MX`}
-                      </p>
-                    </div>
-                    <div className={`flex items-center justify-center rounded-full bg-slate-100 p-2 text-slate-600 transition-transform duration-300 ${showDnsDiag ? "rotate-180" : "rotate-0"}`}>
-                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
-                    </div>
-                  </button>
-                  <div className={`overflow-hidden transition-all duration-300 ease-in-out ${showDnsDiag ? "max-h-[500px] opacity-100" : "max-h-0 opacity-0"}`}>
-                    <div className="space-y-4 border-t border-slate-100 p-5">
-                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                        <VerifySummaryCard bucket="mx_has_mx" label={t.labels.mx_has_mx} value={formatLocaleNumber(stats.mx_has_mx, language)} />
-                        <VerifySummaryCard bucket="mx_a_fallback" label={t.labels.mx_a_fallback} value={formatLocaleNumber(stats.mx_a_fallback, language)} />
-                        <VerifySummaryCard bucket="mx_dead" label={t.labels.mx_dead} value={formatLocaleNumber(stats.mx_dead, language)} />
-                        <VerifySummaryCard bucket="mx_inconclusive" label={t.labels.mx_inconclusive} value={formatLocaleNumber(stats.mx_inconclusive, language)} />
-                      </div>
-                      {(stats.mx_parked > 0 || stats.mx_disposable > 0 || stats.mx_typo > 0) && (
-                        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
-                          <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-amber-700">
-                            {language === "vi" ? "⚠️ Cần Kiểm Tra (Rủi Ro)" : "⚠️ Review Required"}
-                          </p>
-                          <div className="grid grid-cols-3 gap-2">
-                            {[
-                              { key: "mx_parked" as const, label: t.labels.mx_parked, value: stats.mx_parked, color: "text-amber-700" },
-                              { key: "mx_disposable" as const, label: t.labels.mx_disposable, value: stats.mx_disposable, color: "text-orange-700" },
-                              { key: "mx_typo" as const, label: t.labels.mx_typo, value: stats.mx_typo, color: "text-violet-700" },
-                            ].map(({ key, label, value, color }) => (
-                              <div key={key} className="flex flex-col items-center rounded-xl border border-amber-200 bg-white px-3 py-3 text-center shadow-sm">
-                                <p className={`text-xl font-extrabold leading-none ${color}`}>{formatLocaleNumber(value, language)}</p>
-                                <p className="mt-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">{label}</p>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
-              </>
-            )}
-
-            {verifyMode ? (
-              stats.processed_lines > 0 && (
-                <div className="rounded-2xl border border-slate-200 bg-slate-50/50 p-4">
-                  <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                    {language === "vi" ? "Tiền Xử Lý (Basic Filter)" : "Pre-processing (Basic Filter)"}
-                  </p>
-                  <div className="flex flex-wrap items-center gap-2">
-                    {statCards
-                      .filter((card) => ["invalid", "public", "edu", "targeted", "custom", "duplicates"].includes(card.key))
-                      .map((card) => {
-                        const Icon = card.icon;
-                        const value = stats[card.key];
-                        const pct = totalClassified > 0 ? ((value / totalClassified) * 100).toFixed(1) : "0.0";
-                        return (
-                          <div key={card.key} className="flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs shadow-sm transition-all hover:bg-slate-50 hover:shadow">
-                            <Icon className="h-3.5 w-3.5 text-slate-400" />
-                            <span className="font-medium text-slate-500">{t.labels[card.key]}:</span>
-                            <span className="font-bold text-slate-800">{formatLocaleNumber(value, language)}</span>
-                            <span className="text-[10px] font-semibold text-slate-400">({pct}%)</span>
-                          </div>
-                        );
-                      })}
-                  </div>
-                </div>
-              )
-            ) : (
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                {statCards
-                  .filter((card) => ["invalid", "public", "edu", "targeted", "custom", "duplicates"].includes(card.key))
-                  .map((card) => {
-                    const Icon = card.icon;
-                    const value = stats[card.key];
-                    const pct = totalClassified > 0 ? ((value / totalClassified) * 100).toFixed(1) : "0.0";
-                    return (
-                      <article
-                        key={card.key}
-                        className="group flex flex-col gap-3 overflow-hidden rounded-2xl border border-slate-100 bg-white p-4 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md"
-                      >
-                        <div
-                          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ring-1 transition-transform group-hover:scale-110 ${card.chip}`}
-                        >
-                          <Icon className="h-5 w-5" />
-                        </div>
-                        <div className="min-w-0">
-                          <p className="text-2xl font-extrabold leading-none tracking-tight text-slate-800">
-                            {formatLocaleNumber(value, language)}
-                          </p>
-                          <p className="mt-1 truncate text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                            {t.labels[card.key]}
-                          </p>
-                          <p className="text-[11px] font-semibold text-slate-300">{pct}%</p>
-                        </div>
-                      </article>
-                    );
-                  })}
-              </div>
-            )}
-          </div>
+          <ResultsPanel
+            formatNumber={controller.formatNumber}
+            labels={controller.t.labels}
+            language={controller.language}
+            showDnsDiag={controller.showDnsDiag}
+            showSmtpDiag={controller.showSmtpDiag}
+            stats={controller.stats}
+            totalClassified={controller.totalClassified}
+            verifyMode={controller.verifyMode}
+            onToggleDnsDiag={() =>
+              controller.setShowDnsDiag(!controller.showDnsDiag)
+            }
+            onToggleSmtpDiag={() =>
+              controller.setShowSmtpDiag(!controller.showSmtpDiag)
+            }
+          />
         </div>
 
         <HistoryModal
-          isOpen={isHistoryOpen}
-          history={history}
-          language={language}
-          labels={t.labels}
-          statCards={statCards}
-          formatNumber={(value) => formatLocaleNumber(value, language)}
-          onClose={() => setIsHistoryOpen(false)}
-          onOpenFolder={(dir) => {
-            revealItemInDir(dir).catch(console.error);
-          }}
-          onClearHistory={() => {
-            setHistory([]);
-            localStorage.removeItem("filteremail-history");
-          }}
+          isOpen={controller.isHistoryOpen}
+          history={controller.history}
+          language={controller.language}
+          labels={controller.t.labels}
+          statCards={STAT_CARDS}
+          formatNumber={controller.formatNumber}
+          onClose={() => controller.setIsHistoryOpen(false)}
+          onOpenFolder={controller.openHistoryFolder}
+          onClearHistory={controller.clearHistory}
         />
-
       </div>
     </main>
   );

@@ -1,72 +1,8 @@
 import { FolderOpen, History, Trash2, X } from "lucide-react";
 import { VerifyHistoryGroup, type VerifyBucketKey } from "./verify-ui";
-import type { Language } from "../i18n";
-import { translations } from "../i18n";
-
-type ProcessingPayload = {
-  invalid: number;
-  public: number;
-  edu: number;
-  targeted: number;
-  custom: number;
-  duplicates: number;
-  mx_dead: number;
-  mx_has_mx: number;
-  mx_a_fallback: number;
-  mx_inconclusive: number;
-  mx_parked: number;
-  mx_disposable: number;
-  mx_typo: number;
-  smtp_deliverable: number;
-  smtp_rejected: number;
-  smtp_catchall: number;
-  smtp_unknown: number;
-  smtp_enabled: boolean;
-  smtp_elapsed_ms: number;
-  cache_hits: number;
-  final_alive: number;
-  final_dead: number;
-  final_unknown: number;
-  smtp_attempted_emails: number;
-  smtp_cache_hits: number;
-  smtp_coverage_percent: number;
-  smtp_policy_blocked: number;
-  smtp_temp_failure: number;
-  smtp_mailbox_full: number;
-  smtp_mailbox_disabled: number;
-  smtp_bad_mailbox: number;
-  smtp_bad_domain: number;
-  smtp_network_error: number;
-  smtp_protocol_error: number;
-  smtp_timeout: number;
-  elapsed_ms: number;
-  output_dir?: string;
-};
-
-type HistoryEntry = {
-  id: string;
-  timestamp: number;
-  fileNames: string[];
-  mode: "filter" | "verify";
-  stats: ProcessingPayload;
-};
-
-type StatCard = {
-  key:
-    | "invalid"
-    | "public"
-    | "edu"
-    | "targeted"
-    | "custom"
-    | "duplicates"
-    | "mx_disposable"
-    | "mx_has_mx"
-    | "mx_a_fallback"
-    | "mx_typo"
-    | "mx_parked";
-};
-
-type Labels = (typeof translations.en)["labels"];
+import type { Language, TranslationLabels } from "../i18n";
+import type { HistoryEntry } from "../lib/app-state";
+import type { StatCardDefinition } from "../lib/stat-cards";
 
 export function HistoryModal({
   isOpen,
@@ -82,8 +18,8 @@ export function HistoryModal({
   isOpen: boolean;
   history: HistoryEntry[];
   language: Language;
-  labels: Labels;
-  statCards: StatCard[];
+  labels: TranslationLabels;
+  statCards: StatCardDefinition[];
   formatNumber: (value: number) => string;
   onClose: () => void;
   onOpenFolder: (dir: string) => void;

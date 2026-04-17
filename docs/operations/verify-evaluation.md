@@ -27,7 +27,7 @@ This file is the source for the review sheet.
 ## Step 1: Prepare a review sheet
 
 ```bash
-python3 tools/verify_eval.py prepare \
+python3 scripts/eval/verify_eval.py prepare \
   /path/to/33_T4_FINAL_Detail.csv \
   /path/to/verify_review.csv
 ```
@@ -63,7 +63,7 @@ Recommended use:
 ## Step 3: Score the sample
 
 ```bash
-python3 tools/verify_eval.py score /path/to/verify_review.csv
+python3 scripts/eval/verify_eval.py score /path/to/verify_review.csv
 ```
 
 Example output:
