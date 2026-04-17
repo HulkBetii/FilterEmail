@@ -376,6 +376,18 @@ export default function App() {
     persistLanguage(language);
   }, [language]);
 
+  // Auto-expand diagnostic panels during processing so numbers update visibly in real-time
+  useEffect(() => {
+    if (isProcessing) {
+      setShowDnsDiag(true);
+      setShowSmtpDiag(true);
+    } else {
+      // Collapse when done — FinalSummary below takes over as the summary view
+      setShowDnsDiag(false);
+      setShowSmtpDiag(false);
+    }
+  }, [isProcessing]);
+
   useEffect(() => {
     if (isProcessing && stats.processed_lines > 0) {
       setBanner({
