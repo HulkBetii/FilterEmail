@@ -166,6 +166,7 @@ Detailed conventions live in:
 - [docs/architecture/repo-layout.md](docs/architecture/repo-layout.md)
 - [docs/architecture/compat-invariants.md](docs/architecture/compat-invariants.md)
 - [docs/architecture/module-map.md](docs/architecture/module-map.md)
+- [docs/operations/verify-vps-deploy.md](docs/operations/verify-vps-deploy.md)
 - [docs/operations/verify-evaluation.md](docs/operations/verify-evaluation.md)
 - [docs/operations/deploy-key-rotation.md](docs/operations/deploy-key-rotation.md)
 
@@ -286,6 +287,10 @@ Important environment variables:
 The desktop app expects:
 - base URL of the SMTP service
 - Bearer API key
+
+Production deployment details for the current SMTP VPS server live in:
+
+- [docs/operations/verify-vps-deploy.md](docs/operations/verify-vps-deploy.md)
 
 ## Verify Mode Settings
 

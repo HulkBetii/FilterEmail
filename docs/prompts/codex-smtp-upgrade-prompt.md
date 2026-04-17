@@ -452,6 +452,12 @@ vps_api_key: { en: "API Key", vi: "Khóa API" },
 # 3. Mở port: 443 (HTTPS API), 25 outbound (SMTP probe)
 # 4. KHÔNG mở port 25 inbound
 
+# Ghi chú 2026-04-17:
+# Đây là ví dụ prompt/spec lịch sử.
+# Runbook production hiện tại nằm ở docs/operations/verify-vps-deploy.md
+# và server thật đang dùng /usr/local/bin/verify-vps cùng source checkout
+# tại /opt/filteremail/verify-vps, không phải /opt/verify.
+
 # Deploy VPS service:
 cargo build --release
 scp target/x86_64-unknown-linux-gnu/release/verify-vps user@VPS:/opt/verify/
