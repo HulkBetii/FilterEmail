@@ -30,7 +30,6 @@ import {
   XCircle,
 } from "lucide-react";
 import appLogo from "./assets/logo.png";
-import { FinalSummary } from "./components/final-summary";
 import { HistoryModal } from "./components/history-modal";
 import { TopDashboard } from "./components/top-dashboard";
 import {
@@ -380,10 +379,6 @@ export default function App() {
     if (isProcessing) {
       setShowDnsDiag(true);
       setShowSmtpDiag(true);
-    } else {
-      // Collapse when done — FinalSummary below takes over as the summary view
-      setShowDnsDiag(false);
-      setShowSmtpDiag(false);
     }
   }, [isProcessing]);
 
@@ -572,47 +567,7 @@ export default function App() {
   );
   const finalTotal = stats.final_alive + stats.final_dead + stats.final_unknown;
 
-  const invalidRate = totalClassified === 0 ? 0 : (stats.invalid / totalClassified) * 100;
-  const publicRate = totalClassified === 0 ? 0 : (stats.public / totalClassified) * 100;
-  const eduRate = totalClassified === 0 ? 0 : (stats.edu / totalClassified) * 100;
-  const targetedRate = totalClassified === 0 ? 0 : (stats.targeted / totalClassified) * 100;
-  const customRate = totalClassified === 0 ? 0 : (stats.custom / totalClassified) * 100;
-  const verifyDeliverableCount = stats.final_alive;
-  const verifyDomainCount =
-    stats.mx_dead +
-    stats.mx_has_mx +
-    stats.mx_a_fallback +
-    stats.mx_inconclusive +
-    stats.mx_parked +
-    stats.mx_disposable +
-    stats.mx_typo;
-  const verifyReviewCount =
-    stats.mx_inconclusive + stats.mx_parked + stats.mx_disposable + stats.mx_typo;
-  const verifyDeliverableRate = finalTotal === 0 ? 0 : (stats.final_alive / finalTotal) * 100;
-  const verifyDeadRate = finalTotal === 0 ? 0 : (stats.final_dead / finalTotal) * 100;
-  const verifyUnknownRate = finalTotal === 0 ? 0 : (stats.final_unknown / finalTotal) * 100;
-  const verifyReviewRate = finalTotal === 0 ? 0 : (verifyReviewCount / finalTotal) * 100;
-  const verifyFallbackRate =
-    finalTotal === 0 ? 0 : (stats.mx_a_fallback / finalTotal) * 100;
-  const verifyParkedRate =
-    finalTotal === 0 ? 0 : (stats.mx_parked / finalTotal) * 100;
-  const verifyDisposableRate =
-    finalTotal === 0 ? 0 : (stats.mx_disposable / finalTotal) * 100;
-  const verifyTypoRate = finalTotal === 0 ? 0 : (stats.mx_typo / finalTotal) * 100;
-  const smtpCheckedCount = stats.smtp_attempted_emails;
-  const smtpDeliverableRate =
-    smtpCheckedCount === 0 ? 0 : (stats.smtp_deliverable / smtpCheckedCount) * 100;
-  const smtpRejectedRate =
-    smtpCheckedCount === 0 ? 0 : (stats.smtp_rejected / smtpCheckedCount) * 100;
-  const smtpCatchallRate =
-    smtpCheckedCount === 0 ? 0 : (stats.smtp_catchall / smtpCheckedCount) * 100;
-  const smtpUnknownRate =
-    smtpCheckedCount === 0 ? 0 : (stats.smtp_unknown / smtpCheckedCount) * 100;
   const smtpCoveragePercent = stats.smtp_coverage_percent;
-  const validCount =
-    activeTab === "verify"
-      ? stats.final_alive
-      : stats.public + stats.edu + stats.targeted + stats.custom;
 
   const pickInputFile = async () => {
     const selected = await openDialog({
@@ -1262,42 +1217,6 @@ export default function App() {
           }}
         />
 
-        {!isProcessing && (verifyMode ? finalTotal > 0 : totalClassified > 0) && (
-          <FinalSummary
-            verifyMode={verifyMode}
-            labels={t.labels}
-            totalClassified={totalClassified}
-            finalTotal={finalTotal}
-            stats={stats}
-            resolvedOutputDir={resolvedOutputDir}
-            canOpenFolder={canOpenFolder}
-            verifyDeliverableCount={verifyDeliverableCount}
-            verifyDeliverableRate={verifyDeliverableRate}
-            verifyDeadRate={verifyDeadRate}
-            verifyUnknownRate={verifyUnknownRate}
-            verifyReviewCount={verifyReviewCount}
-            verifyReviewRate={verifyReviewRate}
-            verifyFallbackRate={verifyFallbackRate}
-            verifyParkedRate={verifyParkedRate}
-            verifyDisposableRate={verifyDisposableRate}
-            verifyTypoRate={verifyTypoRate}
-            verifyDomainCount={verifyDomainCount}
-            smtpCheckedCount={smtpCheckedCount}
-            smtpDeliverableRate={smtpDeliverableRate}
-            smtpRejectedRate={smtpRejectedRate}
-            smtpCatchallRate={smtpCatchallRate}
-            smtpUnknownRate={smtpUnknownRate}
-            smtpCoveragePercent={smtpCoveragePercent}
-            invalidRate={invalidRate}
-            publicRate={publicRate}
-            eduRate={eduRate}
-            targetedRate={targetedRate}
-            customRate={customRate}
-            validCount={validCount}
-            formatNumber={(value) => formatLocaleNumber(value, language)}
-            onOpenFolder={openResultFolder}
-          />
-        )}
       </div>
     </main>
   );

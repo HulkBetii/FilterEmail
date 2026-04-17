@@ -175,11 +175,11 @@ export function HistoryModal({
                 "smtp_temp_failure",
                 "smtp_mailbox_full",
                 "smtp_mailbox_disabled",
-                "mx_inconclusive",
-                "mx_typo",
-                "mx_disposable",
-                "mx_parked",
-                "mx_a_fallback",
+                "smtp_bad_mailbox",
+                "smtp_bad_domain",
+                "smtp_network_error",
+                "smtp_protocol_error",
+                "smtp_timeout",
               ];
 
               return (
@@ -306,25 +306,27 @@ export function HistoryModal({
                           formatValue={formatNumber}
                         />
                         {entry.stats.smtp_enabled && (
-                          <VerifyHistoryGroup
-                            title={`${labels.historySmtpGroup} • ${formatNumber(smtpChecked)}`}
-                            titleClassName="text-slate-700"
-                            className="rounded-xl border border-slate-200 bg-slate-50 p-3"
-                            buckets={smtpHistoryCards}
-                            getValue={(bucket) => entry.stats[bucket] || 0}
-                            getLabel={(bucket) => labels[bucket]}
-                            formatValue={formatNumber}
-                          />
+                          <>
+                            <VerifyHistoryGroup
+                              title={`${labels.historySmtpGroup} • ${formatNumber(smtpChecked)}`}
+                              titleClassName="text-slate-700"
+                              className="rounded-xl border border-slate-200 bg-slate-50 p-3"
+                              buckets={smtpHistoryCards}
+                              getValue={(bucket) => entry.stats[bucket] || 0}
+                              getLabel={(bucket) => labels[bucket]}
+                              formatValue={formatNumber}
+                            />
+                            <VerifyHistoryGroup
+                              title={labels.smtp_unknown_breakdown}
+                              titleClassName="text-amber-700"
+                              className="rounded-xl border border-amber-100 bg-amber-50/60 p-3"
+                              buckets={unknownBreakdownCards}
+                              getValue={(bucket) => entry.stats[bucket] || 0}
+                              getLabel={(bucket) => labels[bucket]}
+                              formatValue={formatNumber}
+                            />
+                          </>
                         )}
-                        <VerifyHistoryGroup
-                          title={labels.smtp_unknown_breakdown}
-                          titleClassName="text-amber-700"
-                          className="rounded-xl border border-amber-100 bg-amber-50/60 p-3"
-                          buckets={unknownBreakdownCards}
-                          getValue={(bucket) => entry.stats[bucket] || 0}
-                          getLabel={(bucket) => labels[bucket]}
-                          formatValue={formatNumber}
-                        />
                       </div>
                     ) : (
                       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
