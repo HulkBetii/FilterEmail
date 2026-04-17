@@ -28,7 +28,7 @@ use tokio::{
 };
 
 const BUFFER_CAPACITY: usize = 1024 * 1024;
-const EMIT_EVERY: u64 = 10;
+const EMIT_EVERY: u64 = 50;
 const DOMAIN_SCAN_BATCH_SIZE: usize = 1_000;
 const SMTP_BATCH_SIZE: usize = 5;
 const FIRST_PASS_PROGRESS_END: f64 = 35.0;
